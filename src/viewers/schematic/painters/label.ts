@@ -32,7 +32,7 @@ export class LabelPainter extends SchematicItemPainter {
     override classes: any[] = [];
 
     override layers_for(item: schematic_items.Label) {
-        return [LayerNames.label];
+        return [LayerNames.label, LayerNames.interactive];
     }
 
     override paint(layer: ViewLayer, l: schematic_items.Label) {
@@ -55,6 +55,22 @@ export class LabelPainter extends SchematicItemPainter {
         const pos = schtext.text_pos.add(
             this.get_schematic_text_offset(l, schtext),
         );
+
+        if (layer.name == LayerNames.interactive) {
+            // Draw an invisible bbox outline for hit-testing purposes.
+            // get_text_box() works in 1/10000 mm internal units; scale to mm for gfx.
+            const raw_bbox = schtext.get_text_box();
+            const scale = 1 / 10000;
+            const tl = raw_bbox.top_left.multiply(scale);
+            const tr = raw_bbox.top_right.multiply(scale);
+            const br = raw_bbox.bottom_right.multiply(scale);
+            const bl = raw_bbox.bottom_left.multiply(scale);
+            const stroke = schtext.attributes.stroke_width * scale * 2;
+            this.gfx.line(
+                new shapes.Polyline([tl, tr, br, bl, tl], stroke, this.color),
+            );
+            return;
+        }
 
         this.gfx.state.push();
         this.gfx.state.stroke = this.color;

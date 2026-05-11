@@ -12,8 +12,13 @@ import { Canvas2DRenderer } from "../../graphics/canvas2d";
 import type { SchematicTheme } from "../../kicad";
 import {
     KicadSch,
+    NetLabel,
+    GlobalLabel,
+    HierarchicalLabel,
     SchematicSheet,
     SchematicSymbol,
+    Wire,
+    Bus,
 } from "../../kicad/schematic";
 import type { ProjectPage } from "../../kicanvas/project";
 import { DocumentViewer } from "../base/document-viewer";
@@ -60,17 +65,40 @@ export class SchematicViewer extends DocumentViewer<
     }
 
     public override select(
-        item: SchematicSymbol | SchematicSheet | string | BBox | null,
+        item:
+            | SchematicSymbol
+            | SchematicSheet
+            | Wire
+            | Bus
+            | NetLabel
+            | GlobalLabel
+            | HierarchicalLabel
+            | string
+            | BBox
+            | null,
     ): void {
-        // If item is a string, find the symbol by uuid or reference.
+        // If item is a string, find the symbol, sheet, or net label by uuid/reference/name.
         if (is_string(item)) {
             item =
                 this.schematic.find_symbol(item) ??
-                this.schematic.find_sheet(item);
+                this.schematic.find_sheet(item) ??
+                this.schematic.find_net_label(item);
         }
 
         // If it's a symbol or sheet, find the bounding box for it.
         if (item instanceof SchematicSymbol || item instanceof SchematicSheet) {
+            const bboxes = this.layers.query_item_bboxes(item);
+            item = first(bboxes) ?? null;
+        }
+
+        // If it's a net item, find the bounding box for it.
+        if (
+            item instanceof Wire ||
+            item instanceof Bus ||
+            item instanceof NetLabel ||
+            item instanceof GlobalLabel ||
+            item instanceof HierarchicalLabel
+        ) {
             const bboxes = this.layers.query_item_bboxes(item);
             item = first(bboxes) ?? null;
         }

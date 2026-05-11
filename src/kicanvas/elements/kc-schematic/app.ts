@@ -15,7 +15,14 @@ import "./symbols-panel";
 import "./viewer";
 import type { ProjectPage } from "../../project";
 import { KicadSch } from "../../../kicad";
-import { SchematicSheet } from "../../../kicad/schematic";
+import {
+    GlobalLabel,
+    HierarchicalLabel,
+    NetLabel,
+    SchematicSheet,
+    Wire,
+    Bus,
+} from "../../../kicad/schematic";
 
 /**
  * Internal "parent" element for KiCanvas's schematic viewer. Handles
@@ -34,6 +41,18 @@ export class KCSchematicAppElement extends KCViewerAppElement<KCSchematicViewerE
             this.project.set_active_page(
                 `${item.sheetfile}:${item.path}/${item.uuid}`,
             );
+            return;
+        }
+
+        // If it's a net item (wire, bus, or label), show the properties panel.
+        if (
+            item instanceof Wire ||
+            item instanceof Bus ||
+            item instanceof NetLabel ||
+            item instanceof GlobalLabel ||
+            item instanceof HierarchicalLabel
+        ) {
+            this.change_activity("properties");
             return;
         }
 

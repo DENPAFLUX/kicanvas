@@ -154,10 +154,17 @@ class WirePainter extends SchematicItemPainter {
     classes = [schematic_items.Wire];
 
     layers_for(item: schematic_items.Wire) {
-        return [LayerNames.wire];
+        return [LayerNames.wire, LayerNames.interactive];
     }
 
     paint(layer: ViewLayer, w: schematic_items.Wire) {
+        if (layer.name == LayerNames.interactive) {
+            // Draw a thick invisible line for hit-testing purposes.
+            this.gfx.line(
+                new Polyline(w.pts, schematic_items.DefaultValues.wire_width * 4, this.theme.wire),
+            );
+            return;
+        }
         this.gfx.line(
             new Polyline(w.pts, this.gfx.state.stroke_width, this.theme.wire),
         );
@@ -168,10 +175,17 @@ class BusPainter extends SchematicItemPainter {
     classes = [schematic_items.Bus];
 
     layers_for(item: schematic_items.Bus) {
-        return [LayerNames.wire];
+        return [LayerNames.wire, LayerNames.interactive];
     }
 
     paint(layer: ViewLayer, w: schematic_items.Bus) {
+        if (layer.name == LayerNames.interactive) {
+            // Draw a thick invisible line for hit-testing purposes.
+            this.gfx.line(
+                new Polyline(w.pts, schematic_items.DefaultValues.bus_width * 4, this.theme.bus),
+            );
+            return;
+        }
         this.gfx.line(
             new Polyline(
                 w.pts,
@@ -186,10 +200,21 @@ class BusEntryPainter extends SchematicItemPainter {
     classes = [schematic_items.BusEntry];
 
     layers_for(item: schematic_items.BusEntry) {
-        return [LayerNames.junction];
+        return [LayerNames.junction, LayerNames.interactive];
     }
 
     paint(layer: ViewLayer, be: schematic_items.BusEntry) {
+        if (layer.name == LayerNames.interactive) {
+            // Draw a thick invisible line for hit-testing purposes.
+            this.gfx.line(
+                new Polyline(
+                    [be.at.position, be.at.position.add(be.size)],
+                    schematic_items.DefaultValues.wire_width * 4,
+                    this.theme.wire,
+                ),
+            );
+            return;
+        }
         this.gfx.line(
             new Polyline(
                 [be.at.position, be.at.position.add(be.size)],

@@ -246,6 +246,25 @@ export class KicadSch {
         return null;
     }
 
+    find_net_label(name: string) {
+        for (const label of this.net_labels) {
+            if (label.text == name) {
+                return label;
+            }
+        }
+        for (const label of this.global_labels) {
+            if (label.text == name) {
+                return label;
+            }
+        }
+        for (const label of this.hierarchical_labels) {
+            if (label.text == name) {
+                return label;
+            }
+        }
+        return null;
+    }
+
     resolve_text_var(name: string): string | undefined {
         if (name == "FILENAME") {
             return this.filename;
