@@ -23,6 +23,7 @@ import {
 } from "../../kicad/schematic";
 import type { ProjectPage } from "../../kicanvas/project";
 import { DocumentViewer } from "../base/document-viewer";
+import { type ViewLayerSet } from "../base/view-layers";
 import { LayerNames, LayerSet } from "./layers";
 import { SchematicPainter } from "./painter";
 
@@ -73,6 +74,35 @@ export class SchematicViewer extends DocumentViewer<
         return new LayerSet(this.theme);
     }
 
+    // Wires and buses render as ~1 px strokes, so their bboxes are nearly
+    // zero-height (or zero-width for vertical runs). Expand the hit area on a
+    // second pass so they are easy to click without pixel-perfect aim.
+    protected override on_pick(
+        mouse: Vec2,
+        items: ReturnType<ViewLayerSet["query_point"]>,
+    ) {
+        // First: exact hit (labels, symbols, junctions, etc.)
+        for (const { bbox } of items) {
+            this.select(bbox.context ?? bbox);
+            return;
+        }
+
+        // Second: expanded hit — grow each bbox by HIT_RADIUS and re-test.
+        // 0.5 mm ≈ half a 25-mil grid step; comfortably catchable without
+        // accidentally grabbing a neighbouring net.
+        const HIT_RADIUS = 0.5;
+        for (const layer of this.layers.interactive_layers()) {
+            for (const [, bbox] of layer.bboxes) {
+                if (bbox.grow(HIT_RADIUS).contains_point(mouse)) {
+                    this.select(bbox.context ?? bbox);
+                    return;
+                }
+            }
+        }
+
+        this.select(null);
+    }
+
     public override select(
         item:
             | SchematicSymbol
@@ -100,20 +130,25 @@ export class SchematicViewer extends DocumentViewer<
             item = first(bboxes) ?? null;
         }
 
-        // If it's a net item, resolve the net name and store it for painting,
-        // then find a representative bounding box for the base class.
+        // Wire/Bus: flood-fill to find a connected net label and delegate to it.
+        if (item instanceof Wire || item instanceof Bus) {
+            const label = this._find_label_for_wire(item);
+            if (label) {
+                this.select(label);
+                return;
+            }
+            this.#highlighted_net = null;
+            super.select(null);
+            return;
+        }
+
+        // Net labels: store the net name and find the bounding box.
         if (
-            item instanceof Wire ||
-            item instanceof Bus ||
             item instanceof NetLabel ||
             item instanceof GlobalLabel ||
             item instanceof HierarchicalLabel
         ) {
-            const net_name =
-                item instanceof Wire || item instanceof Bus
-                    ? null
-                    : item.text;
-            this.#highlighted_net = net_name;
+            this.#highlighted_net = item.text;
             const bboxes = this.layers.query_item_bboxes(item);
             item = first(bboxes) ?? null;
         } else {
@@ -134,6 +169,60 @@ export class SchematicViewer extends DocumentViewer<
         // Bypass super.select() to avoid triggering KiCanvasSelectEvent; just
         // repaint directly.
         this._paint_net_highlight();
+    }
+
+    private _find_label_for_wire(
+        wire: Wire | Bus,
+    ): NetLabel | GlobalLabel | HierarchicalLabel | null {
+        const TOLERANCE = 0.01;
+        const interactive_layer = this.layers.by_name(LayerNames.interactive);
+        if (!interactive_layer) return null;
+
+        const all_wires: Array<Wire | Bus> = [];
+        const all_labels: Array<NetLabel | GlobalLabel | HierarchicalLabel> = [];
+
+        for (const [item] of interactive_layer.bboxes) {
+            if (item instanceof Wire || item instanceof Bus) {
+                all_wires.push(item);
+            } else if (
+                item instanceof NetLabel ||
+                item instanceof GlobalLabel ||
+                item instanceof HierarchicalLabel
+            ) {
+                all_labels.push(item);
+            }
+        }
+
+        const pts_close = (a: Vec2, b: Vec2) =>
+            Math.abs(a.x - b.x) < TOLERANCE && Math.abs(a.y - b.y) < TOLERANCE;
+
+        const connected = new Set<Wire | Bus>([wire]);
+        const frontier: Vec2[] = wire.pts.filter(Boolean);
+        const visited_pts: Vec2[] = [];
+
+        while (frontier.length > 0) {
+            const pt = frontier.pop()!;
+            if (visited_pts.some((v) => pts_close(v, pt))) continue;
+            visited_pts.push(pt);
+
+            for (const label of all_labels) {
+                if (pts_close(label.at.position, pt)) {
+                    return label;
+                }
+            }
+
+            for (const w of all_wires) {
+                if (connected.has(w)) continue;
+                const [p0, p1] = w.pts;
+                if ((p0 && pts_close(p0, pt)) || (p1 && pts_close(p1, pt))) {
+                    connected.add(w);
+                    if (p0 && pts_close(p0, pt) && p1) frontier.push(p1);
+                    if (p1 && pts_close(p1, pt) && p0) frontier.push(p0);
+                }
+            }
+        }
+
+        return null;
     }
 
     protected override paint_selected() {
