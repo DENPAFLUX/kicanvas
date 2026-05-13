@@ -87,11 +87,6 @@ export class SchematicSymbolPainter extends SchematicItemPainter {
     }
 
     paint(layer: ViewLayer, si: schematic_items.SchematicSymbol) {
-        if (layer.name == LayerNames.interactive && si.lib_symbol.power) {
-            // Don't draw power symbols on the interactive layer.
-            return;
-        }
-
         const transform = get_symbol_transform(si);
 
         this.view_painter.current_symbol = si;

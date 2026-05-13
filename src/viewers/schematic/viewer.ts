@@ -13,6 +13,7 @@ import type { SchematicTheme } from "../../kicad";
 import {
     DefaultValues,
     KicadSch,
+    Junction,
     NetLabel,
     GlobalLabel,
     HierarchicalLabel,
@@ -27,10 +28,250 @@ import { type ViewLayerSet } from "../base/view-layers";
 import { LayerNames, LayerSet } from "./layers";
 import { SchematicPainter } from "./painter";
 
-// KiCad net highlight colour – bright cyan, matching the desktop app.
-const NET_HIGHLIGHT_COLOR = new Color(0, 0.816, 1, 1); // #00d0ff
+/**
+ * Returns the schematic-space connection points for all pins of a symbol.
+ *
+ * Power symbols (and Eagle-imported symbols) often have their pin at a local
+ * position other than (0, 0), so sym.at.position is NOT the wire endpoint.
+ * We replicate the same 2×2 rotation+mirror matrix used by get_symbol_transform
+ * in symbol.ts to convert each pin's local position to schematic coordinates.
+ */
+function sym_pin_positions(sym: SchematicSymbol): Vec2[] {
+    let x1: number, x2: number, y1: number, y2: number;
+    switch (sym.at.rotation) {
+        case 90:  x1 = 0;  x2 = -1; y1 = -1; y2 = 0;  break;
+        case 180: x1 = -1; x2 = 0;  y1 = 0;  y2 = 1;  break;
+        case 270: x1 = 0;  x2 = 1;  y1 = 1;  y2 = 0;  break;
+        default:  x1 = 1;  x2 = 0;  y1 = 0;  y2 = -1; break; // 0°
+    }
+    if (sym.mirror === "y")      { x1 = -x1; y1 = -y1; }
+    else if (sym.mirror === "x") { x2 = -x2; y2 = -y2; }
+
+    const lib = sym.lib_symbol;
+    if (!lib) return [];
+
+    const unit_num = sym.unit ?? 1;
+    const positions: Vec2[] = [];
+    for (const k of unit_num === 0 ? [0] : [0, unit_num]) {
+        for (const unit_sym of lib.units.get(k) ?? []) {
+            for (const pin of unit_sym.pins) {
+                const lx = pin.at.position.x;
+                const ly = pin.at.position.y;
+                positions.push(new Vec2(
+                    sym.at.position.x + x1 * lx + x2 * ly,
+                    sym.at.position.y + y1 * lx + y2 * ly,
+                ));
+            }
+        }
+    }
+    return positions;
+}
+
+interface NetEntry {
+    wires: Set<Wire | Bus>;
+    labels: Array<NetLabel | GlobalLabel | HierarchicalLabel>;
+    power_syms: SchematicSymbol[];
+}
+
+interface NetMap {
+    by_name: Map<string, NetEntry>;
+    /** Fast reverse lookup: wire/bus → net name */
+    wire_to_net: Map<Wire | Bus, string>;
+}
+
+/**
+ * Builds a full connectivity map from a KiCad schematic using union-find.
+ *
+ * Handles: wire endpoint chains, T-junctions (via junction items), labels
+ * placed at wire interior points (not just endpoints), power symbols with
+ * pins offset from the symbol origin.
+ *
+ * Unlabeled connected components are assigned N$1, N$2, … names in wire
+ * order (same convention KiCad uses in its netlister).
+ */
+function build_net_map(schematic: KicadSch): NetMap {
+    const TOLERANCE = 0.01; // mm — KiCad snaps to 25mil ≈ 0.635mm grid
+
+    // Quantise coordinates so floating-point drift doesn't split the same
+    // physical point into two union-find nodes.
+    const inv = 1 / TOLERANCE;
+    const key = (v: Vec2) =>
+        `${Math.round(v.x * inv)},${Math.round(v.y * inv)}`;
+
+    // ── Union-Find ────────────────────────────────────────────────────────
+    const parent = new Map<string, string>();
+
+    const find = (k: string): string => {
+        if (!parent.has(k)) parent.set(k, k);
+        let root = k;
+        while (parent.get(root) !== root) root = parent.get(root)!;
+        // path compression
+        let cur = k;
+        while (cur !== root) {
+            const nxt = parent.get(cur)!;
+            parent.set(cur, root);
+            cur = nxt;
+        }
+        return root;
+    };
+
+    const find_v = (v: Vec2) => find(key(v));
+
+    const union_v = (a: Vec2, b: Vec2) => {
+        const ra = find_v(a);
+        const rb = find_v(b);
+        if (ra !== rb) parent.set(ra, rb);
+    };
+
+    const init_v = (v: Vec2) => {
+        const k = key(v);
+        if (!parent.has(k)) parent.set(k, k);
+    };
+
+    // ── Geometry helpers ─────────────────────────────────────────────────
+    const pts_close = (a: Vec2, b: Vec2) =>
+        Math.abs(a.x - b.x) < TOLERANCE && Math.abs(a.y - b.y) < TOLERANCE;
+
+    const on_segment = (p: Vec2, p0: Vec2, p1: Vec2): boolean => {
+        if (Math.abs(p1.x - p0.x) < TOLERANCE) {
+            if (Math.abs(p.x - p0.x) > TOLERANCE) return false;
+            return (
+                p.y >= Math.min(p0.y, p1.y) - TOLERANCE &&
+                p.y <= Math.max(p0.y, p1.y) + TOLERANCE
+            );
+        }
+        if (Math.abs(p1.y - p0.y) < TOLERANCE) {
+            if (Math.abs(p.y - p0.y) > TOLERANCE) return false;
+            return (
+                p.x >= Math.min(p0.x, p1.x) - TOLERANCE &&
+                p.x <= Math.max(p0.x, p1.x) + TOLERANCE
+            );
+        }
+        const t = (p.x - p0.x) / (p1.x - p0.x);
+        if (t < -TOLERANCE || t > 1 + TOLERANCE) return false;
+        return Math.abs(p0.y + t * (p1.y - p0.y) - p.y) < TOLERANCE;
+    };
+
+    /** Connect point `p` to any wire whose endpoint or interior passes through it. */
+    const connect_to_wires = (p: Vec2, all_wires: (Wire | Bus)[]) => {
+        for (const wire of all_wires) {
+            const [p0, p1] = wire.pts;
+            if (!p0 || !p1) continue;
+            if (pts_close(p, p0) || pts_close(p, p1) || on_segment(p, p0, p1)) {
+                init_v(p);
+                union_v(p, p0);
+                // p0 and p1 already unioned in Phase 1
+            }
+        }
+    };
+
+    // ── Phase 1: union wire endpoints ─────────────────────────────────────
+    const all_wires: (Wire | Bus)[] = [
+        ...schematic.wires,
+        ...schematic.buses,
+    ];
+
+    for (const wire of all_wires) {
+        const [p0, p1] = wire.pts;
+        if (p0 && p1) {
+            init_v(p0);
+            init_v(p1);
+            union_v(p0, p1);
+        }
+    }
+
+    // ── Phase 2: junctions connect T-intersecting wires ───────────────────
+    for (const junc of schematic.junctions) {
+        connect_to_wires(junc.at.position, all_wires);
+    }
+
+    // ── Phase 3: labels (including mid-wire placement) ────────────────────
+    const all_labels: (NetLabel | GlobalLabel | HierarchicalLabel)[] = [
+        ...schematic.net_labels,
+        ...schematic.global_labels,
+        ...schematic.hierarchical_labels,
+    ];
+
+    for (const label of all_labels) {
+        connect_to_wires(label.at.position, all_wires);
+    }
+
+    // ── Phase 4: power symbol pins ────────────────────────────────────────
+    for (const sym of schematic.symbols.values()) {
+        if (!sym.lib_symbol?.power) continue;
+        const pts = sym_pin_positions(sym);
+        if (pts.length === 0) pts.push(sym.at.position);
+        for (const pp of pts) connect_to_wires(pp, all_wires);
+    }
+
+    // ── Assign net names ──────────────────────────────────────────────────
+    const comp_name = new Map<string, string>(); // root key → net name
+
+    for (const label of all_labels) {
+        const root = find_v(label.at.position);
+        if (!comp_name.has(root)) comp_name.set(root, label.text);
+    }
+
+    for (const sym of schematic.symbols.values()) {
+        if (!sym.lib_symbol?.power) continue;
+        const pts = sym_pin_positions(sym);
+        if (pts.length === 0) pts.push(sym.at.position);
+        const root = find_v(pts[0]!);
+        if (!comp_name.has(root)) comp_name.set(root, sym.value);
+    }
+
+    // Unnamed components → N$xx (KiCad convention)
+    let unnamed = 1;
+    for (const wire of all_wires) {
+        const [p0] = wire.pts;
+        if (!p0) continue;
+        const root = find_v(p0);
+        if (!comp_name.has(root)) comp_name.set(root, `N$${unnamed++}`);
+    }
+
+    // ── Build NetMap ──────────────────────────────────────────────────────
+    const by_name = new Map<string, NetEntry>();
+    const wire_to_net = new Map<Wire | Bus, string>();
+
+    const entry = (name: string): NetEntry => {
+        if (!by_name.has(name)) {
+            by_name.set(name, { wires: new Set(), labels: [], power_syms: [] });
+        }
+        return by_name.get(name)!;
+    };
+
+    for (const wire of all_wires) {
+        const [p0] = wire.pts;
+        if (!p0) continue;
+        const name = comp_name.get(find_v(p0));
+        if (name) {
+            entry(name).wires.add(wire);
+            wire_to_net.set(wire, name);
+        }
+    }
+
+    for (const label of all_labels) {
+        const name = comp_name.get(find_v(label.at.position)) ?? label.text;
+        entry(name).labels.push(label);
+    }
+
+    for (const sym of schematic.symbols.values()) {
+        if (!sym.lib_symbol?.power) continue;
+        const pts = sym_pin_positions(sym);
+        if (pts.length === 0) pts.push(sym.at.position);
+        const name = comp_name.get(find_v(pts[0]!)) ?? sym.value;
+        entry(name).power_syms.push(sym);
+    }
+
+    return { by_name, wire_to_net };
+}
+
+// Net highlight colours – vivid yellow fill + solid outline.
+const NET_HIGHLIGHT_COLOR = new Color(1, 0.88, 0, 1);       // #FFE000 solid
+const NET_HIGHLIGHT_FILL  = new Color(1, 0.88, 0, 0.30);    // #FFE000 semi-transparent
+const NET_HIGHLIGHT_OUTLINE_WIDTH = 0.18;                    // outline stroke (mm)
 // Stroke width used when drawing net highlight lines on the overlay.
-const NET_HIGHLIGHT_STROKE = DefaultValues.wire_width * 3;
+const NET_HIGHLIGHT_STROKE = DefaultValues.wire_width * 4;
 
 export class SchematicViewer extends DocumentViewer<
     KicadSch,
@@ -40,6 +281,9 @@ export class SchematicViewer extends DocumentViewer<
 > {
     /** The currently highlighted net name, or null if none. */
     #highlighted_net: string | null = null;
+
+    /** Net connectivity map built once after load. */
+    #net_map: NetMap | null = null;
 
     get schematic(): KicadSch {
         return this.document;
@@ -55,7 +299,9 @@ export class SchematicViewer extends DocumentViewer<
 
     override async load(src: KicadSch | ProjectPage) {
         if (src instanceof KicadSch) {
-            return await super.load(src);
+            const result = await super.load(src);
+            this.#net_map = build_net_map(this.schematic);
+            return result;
         }
 
         this.document = null!;
@@ -63,7 +309,9 @@ export class SchematicViewer extends DocumentViewer<
         const doc = src.document as KicadSch;
         doc.update_hierarchical_data(src.sheet_path);
 
-        return await super.load(doc);
+        const result = await super.load(doc);
+        this.#net_map = build_net_map(this.schematic);
+        return result;
     }
 
     protected override create_painter() {
@@ -77,27 +325,72 @@ export class SchematicViewer extends DocumentViewer<
     // Wires and buses render as ~1 px strokes, so their bboxes are nearly
     // zero-height (or zero-width for vertical runs). Expand the hit area on a
     // second pass so they are easy to click without pixel-perfect aim.
+    //
+    // We also prioritise wires and labels over regular component symbols so that
+    // clicking a pin stub area (which is rendered as part of the symbol, not a
+    // separate Wire item) still reaches the net label placed at the pin endpoint.
     protected override on_pick(
         mouse: Vec2,
         items: ReturnType<ViewLayerSet["query_point"]>,
     ) {
-        // First: exact hit (labels, symbols, junctions, etc.)
+        const is_structural = (ctx: unknown) =>
+            ctx instanceof SchematicSymbol &&
+            !ctx.lib_symbol.power &&
+            (ctx.reference?.startsWith("#") ?? false);
+
+        const is_regular_symbol = (ctx: unknown) =>
+            ctx instanceof SchematicSymbol && !ctx.lib_symbol.power;
+
+        // First pass: exact hit, but defer regular component symbols.
+        // Labels, wires, power symbols, and junctions are selected immediately;
+        // a regular symbol is only used if nothing better is found.
+        let symbol_exact: BBox | null = null;
         for (const { bbox } of items) {
+            if (is_structural(bbox.context)) continue;
+            if (is_regular_symbol(bbox.context)) {
+                if (!symbol_exact) symbol_exact = bbox;
+                continue;
+            }
             this.select(bbox.context ?? bbox);
             return;
         }
 
-        // Second: expanded hit — grow each bbox by HIT_RADIUS and re-test.
-        // 0.5 mm ≈ half a 25-mil grid step; comfortably catchable without
-        // accidentally grabbing a neighbouring net.
-        const HIT_RADIUS = 0.5;
+        // Second pass: expanded hit.
+        // Net labels get a larger radius (LABEL_RADIUS) to cover the full
+        // standard 0.1" / 2.54 mm pin stub so that clicking the stub area
+        // near a pin still resolves to the net label.
+        // Wires/buses use a smaller WIRE_RADIUS (fine-grained click tolerance).
+        // Regular symbols are saved as a fallback but not selected immediately.
+        const WIRE_RADIUS = 0.5;
+        const LABEL_RADIUS = 2.6; // slightly > 2.54 mm standard pin stub
+        let symbol_expanded: BBox | null = null;
+
         for (const layer of this.layers.interactive_layers()) {
             for (const [, bbox] of layer.bboxes) {
-                if (bbox.grow(HIT_RADIUS).contains_point(mouse)) {
-                    this.select(bbox.context ?? bbox);
+                if (is_structural(bbox.context)) continue;
+                const ctx = bbox.context;
+                if (is_regular_symbol(ctx)) {
+                    if (!symbol_expanded && bbox.grow(WIRE_RADIUS).contains_point(mouse)) {
+                        symbol_expanded = bbox;
+                    }
+                    continue;
+                }
+                const radius =
+                    ctx instanceof Wire || ctx instanceof Bus
+                        ? WIRE_RADIUS
+                        : LABEL_RADIUS;
+                if (bbox.grow(radius).contains_point(mouse)) {
+                    this.select(ctx ?? bbox);
                     return;
                 }
             }
+        }
+
+        // Fall back to component symbol (exact hit preferred over expanded hit).
+        const hit = symbol_exact ?? symbol_expanded;
+        if (hit) {
+            this.select(hit.context ?? hit);
+            return;
         }
 
         this.select(null);
@@ -124,21 +417,39 @@ export class SchematicViewer extends DocumentViewer<
                 this.schematic.find_net_label(item);
         }
 
+        // Power port symbols act as net labels: highlight by value, not by reference.
+        if (item instanceof SchematicSymbol && item.lib_symbol.power) {
+            this.#highlighted_net = item.value;
+            const bboxes = this.layers.query_item_bboxes(item);
+            const bbox = first(bboxes) ?? null;
+            super.select(bbox);
+            return;
+        }
+
         // If it's a symbol or sheet, find the bounding box for it.
         if (item instanceof SchematicSymbol || item instanceof SchematicSheet) {
             const bboxes = this.layers.query_item_bboxes(item);
             item = first(bboxes) ?? null;
         }
 
-        // Wire/Bus: flood-fill to find a connected net label and delegate to it.
+        // Wire/Bus: look up the net in the pre-built map and set the highlight.
         if (item instanceof Wire || item instanceof Bus) {
-            const label = this._find_label_for_wire(item);
-            if (label) {
-                this.select(label);
-                return;
+            const net_name = this.#net_map?.wire_to_net.get(item) ?? null;
+            if (net_name) {
+                this.#highlighted_net = net_name;
+                // Try to anchor the selection box to the first label or power sym.
+                const entry = this.#net_map?.by_name.get(net_name);
+                const anchor = entry?.labels[0] ?? entry?.power_syms[0] ?? null;
+                if (anchor) {
+                    const bboxes = this.layers.query_item_bboxes(anchor);
+                    super.select(first(bboxes) ?? null);
+                } else {
+                    super.select(null);
+                }
+            } else {
+                this.#highlighted_net = null;
+                super.select(null);
             }
-            this.#highlighted_net = null;
-            super.select(null);
             return;
         }
 
@@ -171,60 +482,6 @@ export class SchematicViewer extends DocumentViewer<
         this._paint_net_highlight();
     }
 
-    private _find_label_for_wire(
-        wire: Wire | Bus,
-    ): NetLabel | GlobalLabel | HierarchicalLabel | null {
-        const TOLERANCE = 0.01;
-        const interactive_layer = this.layers.by_name(LayerNames.interactive);
-        if (!interactive_layer) return null;
-
-        const all_wires: Array<Wire | Bus> = [];
-        const all_labels: Array<NetLabel | GlobalLabel | HierarchicalLabel> = [];
-
-        for (const [item] of interactive_layer.bboxes) {
-            if (item instanceof Wire || item instanceof Bus) {
-                all_wires.push(item);
-            } else if (
-                item instanceof NetLabel ||
-                item instanceof GlobalLabel ||
-                item instanceof HierarchicalLabel
-            ) {
-                all_labels.push(item);
-            }
-        }
-
-        const pts_close = (a: Vec2, b: Vec2) =>
-            Math.abs(a.x - b.x) < TOLERANCE && Math.abs(a.y - b.y) < TOLERANCE;
-
-        const connected = new Set<Wire | Bus>([wire]);
-        const frontier: Vec2[] = wire.pts.filter(Boolean);
-        const visited_pts: Vec2[] = [];
-
-        while (frontier.length > 0) {
-            const pt = frontier.pop()!;
-            if (visited_pts.some((v) => pts_close(v, pt))) continue;
-            visited_pts.push(pt);
-
-            for (const label of all_labels) {
-                if (pts_close(label.at.position, pt)) {
-                    return label;
-                }
-            }
-
-            for (const w of all_wires) {
-                if (connected.has(w)) continue;
-                const [p0, p1] = w.pts;
-                if ((p0 && pts_close(p0, pt)) || (p1 && pts_close(p1, pt))) {
-                    connected.add(w);
-                    if (p0 && pts_close(p0, pt) && p1) frontier.push(p1);
-                    if (p1 && pts_close(p1, pt) && p0) frontier.push(p0);
-                }
-            }
-        }
-
-        return null;
-    }
-
     protected override paint_selected() {
         if (this.#highlighted_net !== null) {
             this._paint_net_highlight();
@@ -244,118 +501,68 @@ export class SchematicViewer extends DocumentViewer<
         const overlay = this.layers.overlay;
         overlay.clear();
 
-        if (!net_name || !this.schematic) {
+        if (!net_name || !this.schematic || !this.#net_map) {
             this._clear_net_layer_highlights();
             this.draw();
             return;
         }
 
-        // Dim everything except the wire and label layers by marking them as
-        // highlighted. The base on_draw() will render non-highlighted layers at
-        // 25% alpha when any layer is highlighted.
-        this.layers.highlight([
-            LayerNames.wire,
-            LayerNames.label,
-            LayerNames.junction,
-        ]);
+        this._clear_net_layer_highlights();
 
-        // Collect all wire/bus/label items that belong to this net name.
-        // Strategy: find all labels with matching text, then flood-fill connected
-        // wires/buses via shared endpoints (±tolerance). This matches KiCad desktop
-        // behaviour without a full netlist solver.
-        const TOLERANCE = 0.01; // mm — KiCad snaps to 25mil ≈ 0.635 mm grid
+        const net_entry = this.#net_map.by_name.get(net_name);
+        if (!net_entry) {
+            this.draw();
+            return;
+        }
+
         const interactive_layer = this.layers.by_name(LayerNames.interactive)!;
-
-        const matching_labels: Array<NetLabel | GlobalLabel | HierarchicalLabel> = [];
-        const all_wires: Array<Wire | Bus> = [];
-
-        for (const [item] of interactive_layer.bboxes) {
-            if (
-                (item instanceof NetLabel ||
-                    item instanceof GlobalLabel ||
-                    item instanceof HierarchicalLabel) &&
-                item.text === net_name
-            ) {
-                matching_labels.push(item);
-            } else if (item instanceof Wire || item instanceof Bus) {
-                all_wires.push(item);
-            }
-        }
-
-        // Flood-fill: start from every label endpoint, walk connected wires.
-        const pts_close = (a: Vec2, b: Vec2) =>
-            Math.abs(a.x - b.x) < TOLERANCE && Math.abs(a.y - b.y) < TOLERANCE;
-
-        const connected_wires = new Set<Wire | Bus>();
-        const frontier: Vec2[] = matching_labels.map((l) => l.at.position);
-        const visited_pts: Vec2[] = [];
-
-        while (frontier.length > 0) {
-            const pt = frontier.pop()!;
-            if (visited_pts.some((v) => pts_close(v, pt))) continue;
-            visited_pts.push(pt);
-
-            for (const wire of all_wires) {
-                if (connected_wires.has(wire)) continue;
-                const [p0, p1] = wire.pts;
-                if (
-                    (p0 && pts_close(p0, pt)) ||
-                    (p1 && pts_close(p1, pt))
-                ) {
-                    connected_wires.add(wire);
-                    // Expand frontier from the other endpoint.
-                    if (p0 && pts_close(p0, pt) && p1) frontier.push(p1);
-                    if (p1 && pts_close(p1, pt) && p0) frontier.push(p0);
-                }
-            }
-        }
-
-        // Build final list of bboxes to highlight.
         const bboxes: BBox[] = [];
 
-        for (const label of matching_labels) {
+        for (const wire of net_entry.wires) {
+            const bbox = interactive_layer.bboxes.get(wire);
+            if (bbox) bboxes.push(bbox);
+        }
+        for (const label of net_entry.labels) {
             const bbox = interactive_layer.bboxes.get(label);
             if (bbox) bboxes.push(bbox);
         }
-        for (const wire of connected_wires) {
-            const bbox = interactive_layer.bboxes.get(wire);
+        for (const sym of net_entry.power_syms) {
+            const bbox = interactive_layer.bboxes.get(sym);
             if (bbox) bboxes.push(bbox);
         }
 
         if (bboxes.length === 0) {
-            this._clear_net_layer_highlights();
             this.draw();
             return;
         }
 
-        // Draw highlight strokes for every matching item on the overlay layer.
         this.renderer.start_layer(overlay.name);
 
         for (const bbox of bboxes) {
             const item = bbox.context;
             if (item instanceof Wire || item instanceof Bus) {
-                // Re-draw the wire segment in the highlight colour.
                 this.renderer.line(
-                    new Polyline(
-                        item.pts,
-                        NET_HIGHLIGHT_STROKE,
-                        NET_HIGHLIGHT_COLOR,
-                    ),
+                    new Polyline(item.pts, NET_HIGHLIGHT_STROKE, NET_HIGHLIGHT_COLOR),
                 );
             } else if (
                 item instanceof NetLabel ||
                 item instanceof GlobalLabel ||
-                item instanceof HierarchicalLabel
+                item instanceof HierarchicalLabel ||
+                (item instanceof SchematicSymbol && item.lib_symbol.power)
             ) {
-                // Draw a filled highlight rect behind the label.
                 const bb = bbox.copy().grow(0.3);
-                this.renderer.polygon(Polygon.from_BBox(bb, NET_HIGHLIGHT_COLOR));
+                this.renderer.polygon(Polygon.from_BBox(bb, NET_HIGHLIGHT_FILL));
+                this.renderer.line(
+                    new Polyline(
+                        [bb.top_left, bb.top_right, bb.bottom_right, bb.bottom_left, bb.top_left],
+                        NET_HIGHLIGHT_OUTLINE_WIDTH,
+                        NET_HIGHLIGHT_COLOR,
+                    ),
+                );
             }
         }
 
         overlay.graphics = this.renderer.end_layer();
-        overlay.graphics.composite_operation = "overlay";
-
         this.draw();
     }
 }

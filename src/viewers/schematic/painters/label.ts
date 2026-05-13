@@ -59,12 +59,17 @@ export class LabelPainter extends SchematicItemPainter {
         if (layer.name == LayerNames.interactive) {
             // Draw an invisible bbox outline for hit-testing purposes.
             // get_text_box() works in 1/10000 mm internal units; scale to mm for gfx.
+            // The bbox is unrotated, so we rotate its corners around `pos`
+            // (the same pivot StrokeFont.draw uses) to match the visual label.
             const raw_bbox = schtext.get_text_box();
             const scale = 1 / 10000;
-            const tl = raw_bbox.top_left.multiply(scale);
-            const tr = raw_bbox.top_right.multiply(scale);
-            const br = raw_bbox.bottom_right.multiply(scale);
-            const bl = raw_bbox.bottom_left.multiply(scale);
+            const angle = schtext.text_angle;
+            const rotate = (pt: Vec2): Vec2 =>
+                angle.rotate_point(pt, pos).multiply(scale);
+            const tl = rotate(raw_bbox.top_left);
+            const tr = rotate(raw_bbox.top_right);
+            const br = rotate(raw_bbox.bottom_right);
+            const bl = rotate(raw_bbox.bottom_left);
             const stroke = schtext.attributes.stroke_width * scale * 2;
             this.gfx.line(
                 new shapes.Polyline([tl, tr, br, bl, tl], stroke, this.color),
