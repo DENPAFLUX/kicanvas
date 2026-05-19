@@ -422,3 +422,46 @@ export class LocalFileSystem extends LocalFileSystemBase {
         super(new Map(files.map((f) => [f.name, f])));
     }
 }
+
+/**
+ * Virtual file system backed by an in-memory map of raw file data.
+ *
+ * Used for loading KiCad projects extracted from a ZIP archive. Accepts a
+ * map of full ZIP-internal paths to Uint8Array content, strips the common
+ * directory prefix (so all files are keyed by their project-relative paths),
+ * and serves them from memory. This matches the path references used inside
+ * KiCad schematic files (e.g. `(sheetfile "child.kicad_sch")`).
+ */
+export class ZipFileSystem extends LocalFileSystemBase {
+    constructor(entries: Map<string, Uint8Array>) {
+        const paths = Array.from(entries.keys());
+        const prefix = ZipFileSystem.#common_dir_prefix(paths);
+
+        const file_map = new Map<string, File>();
+        for (const [path, data] of entries) {
+            const relative = based_on(prefix, path);
+            file_map.set(relative, new File([data], relative));
+        }
+
+        super(file_map);
+    }
+
+    // Returns the longest common directory prefix shared by all paths, so that
+    // files stored under a single top-level folder in the ZIP are exposed by
+    // their basename (e.g. "project/root.kicad_sch" → "root.kicad_sch").
+    static #common_dir_prefix(paths: string[]): string {
+        if (paths.length === 0) return "";
+        const dir_parts = paths.map((p) =>
+            p.split("/").filter(Boolean).slice(0, -1),
+        );
+        const first = dir_parts[0]!;
+        let len = first.length;
+        for (const parts of dir_parts.slice(1)) {
+            let i = 0;
+            while (i < len && i < parts.length && first[i] === parts[i]) i++;
+            len = i;
+            if (len === 0) break;
+        }
+        return first.slice(0, len).join("/");
+    }
+}

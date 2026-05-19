@@ -20,6 +20,7 @@ import {
     FetchFileSystem,
     LocalFileSystem,
     MergedFileSystem,
+    ZipFileSystem,
     type IFileSystem,
 } from "../services/vfs";
 import type { KCBoardAppElement } from "./kc-board/app";
@@ -157,6 +158,16 @@ class KiCanvasEmbedElement extends KCUIElement {
 
         const vfs = new MergedFileSystem([url_vfs, inline_vfs]);
         await this.#setup_project(vfs);
+    }
+
+    /**
+     * Load a project directly from in-memory file data extracted from a ZIP
+     * archive. Keyed by project-relative path (e.g. "root.kicad_sch").
+     * Call this from JavaScript after the element is in the DOM instead of
+     * using a <kicanvas-source> child element.
+     */
+    public async load_from_files(files: Map<string, Uint8Array>) {
+        await this.#setup_project(new ZipFileSystem(files));
     }
 
     async #setup_project(vfs: IFileSystem) {
