@@ -170,6 +170,10 @@ class KiCanvasEmbedElement extends KCUIElement {
         await this.#setup_project(new ZipFileSystem(files));
     }
 
+    public get project(): Project {
+        return this.#project;
+    }
+
     async #setup_project(vfs: IFileSystem) {
         this.loaded = false;
         this.loading = true;
