@@ -6,6 +6,7 @@
 
 import { SchematicViewer } from "../../../viewers/schematic/viewer";
 import { KCViewerElement } from "../common/viewer";
+import type { ProjectPage } from "../../project";
 
 export class KCSchematicViewerElement extends KCViewerElement<SchematicViewer> {
     protected override update_theme(): void {
@@ -18,6 +19,15 @@ export class KCSchematicViewerElement extends KCViewerElement<SchematicViewer> {
             !this.disableinteraction,
             this.themeObject.schematic,
         );
+    }
+
+    // Pass the full ProjectPage (not src.document) so SchematicViewer.load
+    // hits its ProjectPage branch, which sets this.document = null! and calls
+    // update_hierarchical_data — ensuring kicanvas:load fires on every navigation,
+    // including back to a previously-visited page.
+    override async load(src: ProjectPage) {
+        this.loaded = false;
+        await this.viewer.load(src);
     }
 }
 
