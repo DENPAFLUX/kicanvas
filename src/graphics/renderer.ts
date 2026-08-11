@@ -32,7 +32,10 @@ export abstract class Renderer implements IDisposable {
     canvas: HTMLCanvasElement;
     canvas_size: Vec2 = new Vec2(0, 0);
     state: RenderStateStack = new RenderStateStack();
-    #background_color: Color = Color.black.copy();
+    // Transparent, not a colour: the constructor paints this onto the canvas and
+    // the theme's background only arrives with the first paint, so anything opaque
+    // here flashes over whatever the embedding page put behind the canvas.
+    #background_color: Color = Color.transparent_black;
 
     constructor(canvas: HTMLCanvasElement) {
         this.canvas = canvas;

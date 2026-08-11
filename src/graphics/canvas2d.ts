@@ -43,8 +43,12 @@ export class Canvas2DRenderer extends Renderer {
      * Create and configure the 2D Canvas context.
      */
     override async setup() {
+        // An opaque context starts out black and nothing behind it can show
+        // through, so the canvas paints black from the moment it is sized until
+        // the first clear_canvas(). Staying transparent defers to the page until
+        // then; clear_canvas() fills the background colour anyway.
         const ctx2d = this.canvas.getContext("2d", {
-            alpha: false,
+            alpha: true,
             desynchronized: true,
         });
 
