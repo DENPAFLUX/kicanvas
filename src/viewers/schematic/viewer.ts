@@ -18,6 +18,7 @@ import {
     GlobalLabel,
     HierarchicalLabel,
     SchematicSheet,
+    SchematicSheetPin,
     SchematicSymbol,
     Wire,
     Bus,
@@ -71,6 +72,7 @@ interface NetEntry {
     wires: Set<Wire | Bus>;
     labels: Array<NetLabel | GlobalLabel | HierarchicalLabel>;
     power_syms: SchematicSymbol[];
+    sheet_pins: SchematicSheetPin[];
 }
 
 interface NetMap {
@@ -196,6 +198,15 @@ function build_net_map(schematic: KicadSch): NetMap {
         connect_to_wires(label.at.position, all_wires);
     }
 
+    const all_sheet_pins: SchematicSheetPin[] = [];
+    for (const sheet of schematic.sheets) {
+        for (const pin of sheet.pins) all_sheet_pins.push(pin);
+    }
+
+    for (const pin of all_sheet_pins) {
+        connect_to_wires(pin.at.position, all_wires);
+    }
+
     // ── Phase 4: power symbol pins ────────────────────────────────────────
     for (const sym of schematic.symbols.values()) {
         if (!sym.lib_symbol?.power) continue;
@@ -205,19 +216,29 @@ function build_net_map(schematic: KicadSch): NetMap {
     }
 
     // ── Assign net names ──────────────────────────────────────────────────
-    const comp_name = new Map<string, string>(); // root key → net name
+    // A label and a power symbol on the same wire name one net twice.
+    const comp_names = new Map<string, Set<string>>(); // root key → net names
+    const comp_name = new Map<string, string>(); // root key → primary name
+
+    const add_name = (root: string, name: string) => {
+        if (!comp_names.has(root)) comp_names.set(root, new Set());
+        comp_names.get(root)!.add(name);
+        if (!comp_name.has(root)) comp_name.set(root, name);
+    };
 
     for (const label of all_labels) {
-        const root = find_v(label.at.position);
-        if (!comp_name.has(root)) comp_name.set(root, label.text);
+        add_name(find_v(label.at.position), label.text);
     }
 
     for (const sym of schematic.symbols.values()) {
         if (!sym.lib_symbol?.power) continue;
         const pts = sym_pin_positions(sym);
         if (pts.length === 0) pts.push(sym.at.position);
-        const root = find_v(pts[0]!);
-        if (!comp_name.has(root)) comp_name.set(root, sym.value);
+        add_name(find_v(pts[0]!), sym.value);
+    }
+
+    for (const pin of all_sheet_pins) {
+        add_name(find_v(pin.at.position), pin.name);
     }
 
     // Unnamed components → N$xx (KiCad convention)
@@ -226,7 +247,7 @@ function build_net_map(schematic: KicadSch): NetMap {
         const [p0] = wire.pts;
         if (!p0) continue;
         const root = find_v(p0);
-        if (!comp_name.has(root)) comp_name.set(root, `N$${unnamed++}`);
+        if (!comp_names.has(root)) add_name(root, `N$${unnamed++}`);
     }
 
     // ── Build NetMap ──────────────────────────────────────────────────────
@@ -235,32 +256,51 @@ function build_net_map(schematic: KicadSch): NetMap {
 
     const entry = (name: string): NetEntry => {
         if (!by_name.has(name)) {
-            by_name.set(name, { wires: new Set(), labels: [], power_syms: [] });
+            by_name.set(name, {
+                wires: new Set(),
+                labels: [],
+                power_syms: [],
+                sheet_pins: [],
+            });
         }
         return by_name.get(name)!;
     };
 
+    const names_of = (root: string, fallback: string) =>
+        comp_names.get(root) ?? new Set([fallback]);
+
     for (const wire of all_wires) {
         const [p0] = wire.pts;
         if (!p0) continue;
-        const name = comp_name.get(find_v(p0));
-        if (name) {
-            entry(name).wires.add(wire);
-            wire_to_net.set(wire, name);
-        }
+        const root = find_v(p0);
+        const primary = comp_name.get(root);
+        if (!primary) continue;
+        wire_to_net.set(wire, primary);
+        for (const name of names_of(root, primary)) entry(name).wires.add(wire);
     }
 
     for (const label of all_labels) {
-        const name = comp_name.get(find_v(label.at.position)) ?? label.text;
-        entry(name).labels.push(label);
+        const root = find_v(label.at.position);
+        for (const name of names_of(root, label.text)) {
+            entry(name).labels.push(label);
+        }
     }
 
     for (const sym of schematic.symbols.values()) {
         if (!sym.lib_symbol?.power) continue;
         const pts = sym_pin_positions(sym);
         if (pts.length === 0) pts.push(sym.at.position);
-        const name = comp_name.get(find_v(pts[0]!)) ?? sym.value;
-        entry(name).power_syms.push(sym);
+        const root = find_v(pts[0]!);
+        for (const name of names_of(root, sym.value)) {
+            entry(name).power_syms.push(sym);
+        }
+    }
+
+    for (const pin of all_sheet_pins) {
+        const root = find_v(pin.at.position);
+        for (const name of names_of(root, pin.name)) {
+            entry(name).sheet_pins.push(pin);
+        }
     }
 
     return { by_name, wire_to_net };
@@ -274,7 +314,8 @@ const NET_HIGHLIGHT_STROKE = DefaultValues.wire_width * 4;
 
 // Selection box colours come from the active theme's `shadow`.
 const SELECTION_FILL_ALPHA = 0.25;
-const SELECTION_OUTLINE_WIDTH = 0.254;                       // outline stroke (mm)
+const SELECTION_OUTLINE_WIDTH = 0.254;
+const SHEET_PIN_RADIUS = 1.27; // half a 0.1" grid step                       // outline stroke (mm)
 
 export class SchematicViewer extends DocumentViewer<
     KicadSch,
@@ -283,7 +324,10 @@ export class SchematicViewer extends DocumentViewer<
     SchematicTheme
 > {
     /** The currently highlighted net name, or null if none. */
-    #highlighted_net: string | null = null;
+    #highlight: { nets: Set<string>; parts: Set<string> } = {
+        nets: new Set(),
+        parts: new Set(),
+    };
 
     /** Net connectivity map built once after load. */
     #net_map: NetMap | null = null;
@@ -422,7 +466,6 @@ export class SchematicViewer extends DocumentViewer<
 
         // Power port symbols act as net labels: highlight by value, not by reference.
         if (item instanceof SchematicSymbol && item.lib_symbol.power) {
-            this.#highlighted_net = item.value;
             const bboxes = this.layers.query_item_bboxes(item);
             const bbox = first(bboxes) ?? null;
             super.select(bbox);
@@ -439,7 +482,6 @@ export class SchematicViewer extends DocumentViewer<
         if (item instanceof Wire || item instanceof Bus) {
             const net_name = this.#net_map?.wire_to_net.get(item) ?? null;
             if (net_name) {
-                this.#highlighted_net = net_name;
                 // Try to anchor the selection box to the first label or power sym.
                 const entry = this.#net_map?.by_name.get(net_name);
                 const anchor = entry?.labels[0] ?? entry?.power_syms[0] ?? null;
@@ -450,7 +492,6 @@ export class SchematicViewer extends DocumentViewer<
                     super.select(null);
                 }
             } else {
-                this.#highlighted_net = null;
                 super.select(null);
             }
             return;
@@ -462,148 +503,116 @@ export class SchematicViewer extends DocumentViewer<
             item instanceof GlobalLabel ||
             item instanceof HierarchicalLabel
         ) {
-            this.#highlighted_net = item.text;
             const bboxes = this.layers.query_item_bboxes(item);
             item = first(bboxes) ?? null;
-        } else {
-            // Symbol, sheet, null, or BBox — clear net highlight.
-            this.#highlighted_net = null;
         }
 
         super.select(item);
     }
 
-    /**
-     * Highlight all schematic items belonging to the named net.
-     * Can be called externally for cross-probing without going through select().
-     * Pass null to clear the net highlight.
-     */
-    public highlight_net(name: string | null) {
-        this.#highlighted_net = name;
-        // Bypass super.select() to avoid triggering KiCanvasSelectEvent; just
-        // repaint directly.
-        this._paint_net_highlight();
+    /** Paints directly, so it emits no KiCanvasSelectEvent. */
+    public set_highlight(nets: Iterable<string>, parts: Iterable<string>) {
+        this.#highlight = { nets: new Set(nets), parts: new Set(parts) };
+        this._paint_highlight();
     }
 
     protected override paint_selected() {
-        if (this.#highlighted_net !== null) {
-            this._paint_net_highlight();
-        } else {
-            // Clear layer highlights that may have been set by a previous net selection.
-            this._clear_net_layer_highlights();
-            this._paint_selection_box();
-        }
+        this._paint_highlight();
     }
 
-    /**
-     * Tints the selected item's bounding box. Deliberately not
-     * `super.paint_selected()`: that brightens via an `overlay` composite,
-     * which clips every backdrop channel above 0.5 to pure white and so erases
-     * the item on a light theme.
-     */
-    private _paint_selection_box() {
-        const overlay = this.layers.overlay;
-        overlay.clear();
+    #highlight_items() {
+        const interactive = this.layers.by_name(LayerNames.interactive)!;
+        const wires: (Wire | Bus)[] = [];
+        const boxes: { bbox: BBox; net: boolean }[] = [];
 
-        const selected = this.selected;
+        if (!this.schematic) return { wires, boxes };
 
-        if (selected) {
-            const bb = selected.copy().grow(selected.w * 0.1);
-            this.renderer.start_layer(overlay.name);
+        for (const net_name of this.#highlight.nets) {
+            const entry = this.#net_map?.by_name.get(net_name);
+            if (!entry) continue;
 
-            this.renderer.polygon(
-                Polygon.from_BBox(
-                    bb,
-                    this.theme.shadow.with_alpha(SELECTION_FILL_ALPHA),
-                ),
-            );
-            this.renderer.line(
-                Polyline.from_BBox(
-                    bb,
-                    SELECTION_OUTLINE_WIDTH,
-                    this.theme.shadow,
-                ),
-            );
-
-            overlay.graphics = this.renderer.end_layer();
+            for (const wire of entry.wires) {
+                if (interactive.bboxes.get(wire)) wires.push(wire);
+            }
+            for (const item of [...entry.labels, ...entry.power_syms]) {
+                const bbox = interactive.bboxes.get(item);
+                if (bbox) boxes.push({ bbox: bbox.copy().grow(0.3), net: true });
+            }
+            // The sheet painter draws pins as throwaway labels, so no bbox is
+            // registered for the pin itself.
+            for (const pin of entry.sheet_pins) {
+                const at = pin.at.position;
+                boxes.push({
+                    bbox: new BBox(
+                        at.x - SHEET_PIN_RADIUS,
+                        at.y - SHEET_PIN_RADIUS,
+                        SHEET_PIN_RADIUS * 2,
+                        SHEET_PIN_RADIUS * 2,
+                    ),
+                    net: true,
+                });
+            }
         }
 
+        for (const reference of this.#highlight.parts) {
+            const sym = this.schematic.find_symbol(reference);
+            if (!sym) continue;
+            const bbox = first(this.layers.query_item_bboxes(sym));
+            if (bbox) {
+                boxes.push({ bbox: bbox.copy().grow(bbox.w * 0.1), net: false });
+            }
+        }
+
+        return { wires, boxes };
+    }
+
+    public override zoom_to_selection() {
+        const interactive = this.layers.by_name(LayerNames.interactive)!;
+        const { wires, boxes } = this.#highlight_items();
+        const bboxes = [
+            ...wires.map((wire) => interactive.bboxes.get(wire)!),
+            ...boxes.map(({ bbox }) => bbox),
+        ];
+
+        if (bboxes.length === 0) {
+            super.zoom_to_selection();
+            return;
+        }
+
+        this.viewport.camera.bbox = BBox.combine(bboxes).grow(10);
         this.draw();
     }
 
-    private _clear_net_layer_highlights() {
-        this.layers.highlight(null);
-    }
-
-    private _paint_net_highlight() {
-        const net_name = this.#highlighted_net;
+    private _paint_highlight() {
         const overlay = this.layers.overlay;
         overlay.clear();
+        this.layers.highlight(null);
 
-        if (!net_name || !this.schematic || !this.#net_map) {
-            this._clear_net_layer_highlights();
-            this.draw();
-            return;
-        }
-
-        this._clear_net_layer_highlights();
-
-        const net_entry = this.#net_map.by_name.get(net_name);
-        if (!net_entry) {
-            this.draw();
-            return;
-        }
-
-        const interactive_layer = this.layers.by_name(LayerNames.interactive)!;
-        const bboxes: BBox[] = [];
-
-        for (const wire of net_entry.wires) {
-            const bbox = interactive_layer.bboxes.get(wire);
-            if (bbox) bboxes.push(bbox);
-        }
-        for (const label of net_entry.labels) {
-            const bbox = interactive_layer.bboxes.get(label);
-            if (bbox) bboxes.push(bbox);
-        }
-        for (const sym of net_entry.power_syms) {
-            const bbox = interactive_layer.bboxes.get(sym);
-            if (bbox) bboxes.push(bbox);
-        }
-
-        if (bboxes.length === 0) {
-            this.draw();
-            return;
-        }
+        const { wires, boxes } = this.#highlight_items();
+        const net_color = this.theme.brightened;
+        const net_fill = net_color.with_alpha(NET_HIGHLIGHT_FILL_ALPHA);
+        const part_color = this.theme.shadow;
+        const part_fill = part_color.with_alpha(SELECTION_FILL_ALPHA);
 
         this.renderer.start_layer(overlay.name);
 
-        const highlight_color = this.theme.brightened;
-        const highlight_fill = highlight_color.with_alpha(
-            NET_HIGHLIGHT_FILL_ALPHA,
-        );
+        for (const wire of wires) {
+            this.renderer.line(
+                new Polyline(wire.pts, NET_HIGHLIGHT_STROKE, net_color),
+            );
+        }
 
-        for (const bbox of bboxes) {
-            const item = bbox.context;
-            if (item instanceof Wire || item instanceof Bus) {
-                this.renderer.line(
-                    new Polyline(item.pts, NET_HIGHLIGHT_STROKE, highlight_color),
-                );
-            } else if (
-                item instanceof NetLabel ||
-                item instanceof GlobalLabel ||
-                item instanceof HierarchicalLabel ||
-                (item instanceof SchematicSymbol && item.lib_symbol.power)
-            ) {
-                const bb = bbox.copy().grow(0.3);
-                this.renderer.polygon(Polygon.from_BBox(bb, highlight_fill));
-                this.renderer.line(
-                    new Polyline(
-                        [bb.top_left, bb.top_right, bb.bottom_right, bb.bottom_left, bb.top_left],
-                        NET_HIGHLIGHT_OUTLINE_WIDTH,
-                        highlight_color,
-                    ),
-                );
-            }
+        for (const { bbox, net } of boxes) {
+            this.renderer.polygon(
+                Polygon.from_BBox(bbox, net ? net_fill : part_fill),
+            );
+            this.renderer.line(
+                Polyline.from_BBox(
+                    bbox,
+                    net ? NET_HIGHLIGHT_OUTLINE_WIDTH : SELECTION_OUTLINE_WIDTH,
+                    net ? net_color : part_color,
+                ),
+            );
         }
 
         overlay.graphics = this.renderer.end_layer();

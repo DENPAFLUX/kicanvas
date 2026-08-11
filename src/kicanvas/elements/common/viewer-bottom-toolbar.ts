@@ -6,10 +6,7 @@
 
 import { css, html } from "../../../base/web-components";
 import { KCUIElement, type KCUIButtonElement } from "../../../kc-ui";
-import {
-    KiCanvasMouseMoveEvent,
-    KiCanvasSelectEvent,
-} from "../../../viewers/base/events";
+import { KiCanvasMouseMoveEvent } from "../../../viewers/base/events";
 import type { Viewer } from "../../../viewers/base/viewer";
 
 export class KCViewerBottomToolbarElement extends KCUIElement {
@@ -52,13 +49,6 @@ export class KCViewerBottomToolbarElement extends KCUIElement {
                     },
                 ),
             );
-            this.addDisposable(
-                this.viewer.addEventListener(KiCanvasSelectEvent.type, (e) => {
-                    this.#zoom_to_selection_btn.disabled = e.detail.item
-                        ? false
-                        : true;
-                }),
-            );
 
             this.#zoom_to_page_btn.addEventListener("click", (e) => {
                 e.preventDefault();
@@ -96,8 +86,7 @@ export class KCViewerBottomToolbarElement extends KCUIElement {
             variant="toolbar"
             name="zoom_to_selection"
             title="zoom to selection"
-            icon="svg:zoom_footprint"
-            disabled>
+            icon="svg:zoom_footprint">
         </kc-ui-button>` as KCUIButtonElement;
 
         this.update_position();
