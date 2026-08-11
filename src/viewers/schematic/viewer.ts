@@ -7,7 +7,7 @@
 import { first } from "../../base/iterator";
 import { BBox, Vec2 } from "../../base/math";
 import { is_string } from "../../base/types";
-import { Color, Polygon, Polyline, Renderer } from "../../graphics";
+import { Polygon, Polyline, Renderer } from "../../graphics";
 import { Canvas2DRenderer } from "../../graphics/canvas2d";
 import type { SchematicTheme } from "../../kicad";
 import {
@@ -266,12 +266,15 @@ function build_net_map(schematic: KicadSch): NetMap {
     return { by_name, wire_to_net };
 }
 
-// Net highlight colours – vivid yellow fill + solid outline.
-const NET_HIGHLIGHT_COLOR = new Color(1, 0.88, 0, 1);       // #FFE000 solid
-const NET_HIGHLIGHT_FILL  = new Color(1, 0.88, 0, 0.30);    // #FFE000 semi-transparent
+// Net highlight colours come from the active theme's `brightened`.
+const NET_HIGHLIGHT_FILL_ALPHA = 0.3;
 const NET_HIGHLIGHT_OUTLINE_WIDTH = 0.18;                    // outline stroke (mm)
 // Stroke width used when drawing net highlight lines on the overlay.
 const NET_HIGHLIGHT_STROKE = DefaultValues.wire_width * 4;
+
+// Selection box colours come from the active theme's `shadow`.
+const SELECTION_FILL_ALPHA = 0.25;
+const SELECTION_OUTLINE_WIDTH = 0.254;                       // outline stroke (mm)
 
 export class SchematicViewer extends DocumentViewer<
     KicadSch,
@@ -488,8 +491,44 @@ export class SchematicViewer extends DocumentViewer<
         } else {
             // Clear layer highlights that may have been set by a previous net selection.
             this._clear_net_layer_highlights();
-            super.paint_selected();
+            this._paint_selection_box();
         }
+    }
+
+    /**
+     * Tints the selected item's bounding box. Deliberately not
+     * `super.paint_selected()`: that brightens via an `overlay` composite,
+     * which clips every backdrop channel above 0.5 to pure white and so erases
+     * the item on a light theme.
+     */
+    private _paint_selection_box() {
+        const overlay = this.layers.overlay;
+        overlay.clear();
+
+        const selected = this.selected;
+
+        if (selected) {
+            const bb = selected.copy().grow(selected.w * 0.1);
+            this.renderer.start_layer(overlay.name);
+
+            this.renderer.polygon(
+                Polygon.from_BBox(
+                    bb,
+                    this.theme.shadow.with_alpha(SELECTION_FILL_ALPHA),
+                ),
+            );
+            this.renderer.line(
+                Polyline.from_BBox(
+                    bb,
+                    SELECTION_OUTLINE_WIDTH,
+                    this.theme.shadow,
+                ),
+            );
+
+            overlay.graphics = this.renderer.end_layer();
+        }
+
+        this.draw();
     }
 
     private _clear_net_layer_highlights() {
@@ -538,11 +577,16 @@ export class SchematicViewer extends DocumentViewer<
 
         this.renderer.start_layer(overlay.name);
 
+        const highlight_color = this.theme.brightened;
+        const highlight_fill = highlight_color.with_alpha(
+            NET_HIGHLIGHT_FILL_ALPHA,
+        );
+
         for (const bbox of bboxes) {
             const item = bbox.context;
             if (item instanceof Wire || item instanceof Bus) {
                 this.renderer.line(
-                    new Polyline(item.pts, NET_HIGHLIGHT_STROKE, NET_HIGHLIGHT_COLOR),
+                    new Polyline(item.pts, NET_HIGHLIGHT_STROKE, highlight_color),
                 );
             } else if (
                 item instanceof NetLabel ||
@@ -551,12 +595,12 @@ export class SchematicViewer extends DocumentViewer<
                 (item instanceof SchematicSymbol && item.lib_symbol.power)
             ) {
                 const bb = bbox.copy().grow(0.3);
-                this.renderer.polygon(Polygon.from_BBox(bb, NET_HIGHLIGHT_FILL));
+                this.renderer.polygon(Polygon.from_BBox(bb, highlight_fill));
                 this.renderer.line(
                     new Polyline(
                         [bb.top_left, bb.top_right, bb.bottom_right, bb.bottom_left, bb.top_left],
                         NET_HIGHLIGHT_OUTLINE_WIDTH,
-                        NET_HIGHLIGHT_COLOR,
+                        highlight_color,
                     ),
                 );
             }
