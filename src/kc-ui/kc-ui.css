@@ -179,10 +179,25 @@
     --panel-title-bg: var(--gradient-purple-green-light);
     --panel-subtitle-bg: var(--gradient-purple-blue-medium);
 
-    --button-toolbar-bg: var(--gradient-purple-blue-dark);
-    --button-toolbar-hover-bg: var(--gradient-purple-green-light);
-    --button-toolbar-hover-fg: #f8f8f0;
-    --button-toolbar-disabled-bg: var(--gradient-purple-blue-dark);
+    /* Toolbar chrome follows the host app's palette when it defines one. These
+       are redeclared on every shadow root's :host, so an outer stylesheet can
+       only reach them through tokens inherited from the document. */
+    --button-toolbar-bg: var(--color-base-100, var(--gradient-purple-blue-dark));
+    --button-toolbar-fg: var(--color-base-content, #f8f8f0);
+    --button-toolbar-hover-bg: var(
+        --color-hover,
+        var(--gradient-purple-green-light)
+    );
+    --button-toolbar-hover-fg: var(--color-hover-content, #f8f8f0);
+    --button-toolbar-disabled-bg: var(
+        --color-base-100,
+        var(--gradient-purple-blue-dark)
+    );
+    --button-toolbar-disabled-fg: color-mix(
+        in oklab,
+        var(--color-base-content, #888) 40%,
+        transparent
+    );
 
     --button-toolbar-alt-bg: var(--gradient-purple-green-light);
     --button-toolbar-alt-hover-bg: var(--gradient-purple-green-highlight);
