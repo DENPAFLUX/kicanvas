@@ -208,18 +208,19 @@ export class PanAndZoom {
     }
 
     #handle_zoom(delta: number, mouse?: Vec2) {
+        // Sampled before the zoom changes: the point under the cursor has to be
+        // compared across the two zoom levels to keep it fixed on screen.
+        const before = mouse != null ? this.camera.screen_to_world(mouse) : null;
+
         this.camera.zoom *= Math.exp(delta * -zoom_speed);
         this.camera.zoom = Math.min(
             this.max_zoom,
             Math.max(this.camera.zoom, this.min_zoom),
         );
 
-        if (mouse != null) {
-            const mouse_world = this.camera.screen_to_world(mouse);
-            const new_world = this.camera.screen_to_world(mouse);
-            const center_delta = mouse_world.sub(new_world);
-
-            this.camera.translate(center_delta);
+        if (before != null && mouse != null) {
+            const after = this.camera.screen_to_world(mouse);
+            this.camera.translate(before.sub(after));
         }
 
         if (this.callback) {
