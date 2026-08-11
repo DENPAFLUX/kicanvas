@@ -4,14 +4,40 @@
     Full text available at: https://opensource.org/licenses/MIT
 */
 
-import { css, html } from "../base/web-components";
+import { css, html, literal } from "../base/web-components";
 import { KCUIElement } from "./element";
 
 /**
  * kc-ui-icon is a material symbol
  */
 export class KCUIIconElement extends KCUIElement {
-    public static sprites_url: string = "";
+    /**
+     * Sprite sheet markup, i.e. the `<symbol>` definitions. Consumers must set
+     * this before any `svg:`-prefixed icon renders, or that icon draws nothing.
+     */
+    public static sprites_source: string = "";
+
+    static #symbols: Map<string, string> = new Map();
+    static #symbols_source: string | null = null;
+
+    static #symbol(name: string): string {
+        if (KCUIIconElement.#symbols_source !== KCUIIconElement.sprites_source) {
+            KCUIIconElement.#symbols_source = KCUIIconElement.sprites_source;
+            KCUIIconElement.#symbols = new Map(
+                Array.from(
+                    new DOMParser()
+                        .parseFromString(
+                            KCUIIconElement.sprites_source,
+                            "image/svg+xml",
+                        )
+                        .querySelectorAll("symbol"),
+                    (symbol) => [symbol.id, symbol.outerHTML],
+                ),
+            );
+        }
+
+        return KCUIIconElement.#symbols.get(name) ?? "";
+    }
 
     static override styles = [
         css`
@@ -46,10 +72,12 @@ export class KCUIIconElement extends KCUIElement {
         const text = this.textContent ?? "";
         if (text.startsWith("svg:")) {
             const name = text.slice(4);
-            // TODO: 404 error?
-            const url = `${KCUIIconElement.sprites_url}#${name}`;
+            // The symbol is inlined rather than referenced across documents:
+            // a `<use>` into the sprite document resolves its `fill` there, so
+            // `currentColor` would never see this element's colour.
             return html`<svg viewBox="0 0 48 48" width="48">
-                <use xlink:href="${url}" />
+                ${literal`${KCUIIconElement.#symbol(name)}`}
+                <use xlink:href="#${name}" />
             </svg>`;
         } else {
             return html`<slot></slot>`;

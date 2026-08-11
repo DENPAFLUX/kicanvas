@@ -6,6 +6,4 @@
 
 import sprites_src from "./sprites.svg";
 
-export const sprites_url = URL.createObjectURL(
-    new Blob([sprites_src], { type: "image/svg+xml" }),
-);
+export const sprites_source: string = sprites_src;

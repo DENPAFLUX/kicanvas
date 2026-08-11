@@ -9,7 +9,7 @@ import { DropTarget } from "../../base/dom/drag-drop";
 import { FilePicker } from "../../base/dom/file-picker";
 import { CSS, attribute, html, query } from "../../base/web-components";
 import { KCUIElement, KCUIIconElement } from "../../kc-ui";
-import { sprites_url } from "../icons/sprites";
+import { sprites_source } from "../icons/sprites";
 import { Project } from "../project";
 import { GitHubFileSystem } from "../services/github-vfs";
 import { CodebergFileSystem } from "../services/codeberg-vfs";
@@ -24,7 +24,7 @@ import "../icons/sprites";
 import "./common/project-panel";
 
 // Setup KCUIIconElement to use icon sprites.
-KCUIIconElement.sprites_url = sprites_url;
+KCUIIconElement.sprites_source = sprites_source;
 
 /**
  * <kc-kicanvas-shell> is the main entrypoint for the standalone KiCanvas
