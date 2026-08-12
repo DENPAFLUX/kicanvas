@@ -14,13 +14,27 @@ export class KiCanvasLoadEvent extends KiCanvasEvent<null> {
     static readonly type = "kicanvas:load";
 
     constructor() {
-        super(KiCanvasLoadEvent.type, null);
+        super(KiCanvasLoadEvent.type, null, true);
     }
+}
+
+/**
+ * What the document means by a selected item, for embedders that work in nets
+ * and parts rather than in KiCad items.
+ */
+export interface Selection {
+    kind: "net" | "part" | "sheet";
+    /** Net name, part reference designator, or sheet id, per `kind`. */
+    name: string;
 }
 
 interface SelectDetails {
     item: unknown;
     previous: unknown;
+    /** null when the item means nothing outside the document, and on deselect. */
+    selection: Selection | null;
+    /** A modifier key was held for the click that made this selection. */
+    additive: boolean;
 }
 
 export class KiCanvasSelectEvent extends KiCanvasEvent<SelectDetails> {
@@ -28,6 +42,15 @@ export class KiCanvasSelectEvent extends KiCanvasEvent<SelectDetails> {
 
     constructor(detail: SelectDetails) {
         super(KiCanvasSelectEvent.type, detail, true);
+    }
+}
+
+/** The project's active page changed, before the new page has loaded. */
+export class KiCanvasSheetChangeEvent extends KiCanvasEvent<null> {
+    static readonly type = "kicanvas:sheetchange";
+
+    constructor() {
+        super(KiCanvasSheetChangeEvent.type, null, true);
     }
 }
 
@@ -49,6 +72,7 @@ export class KiCanvasMouseMoveEvent extends KiCanvasEvent<MouseMoveDetails> {
 export interface KiCanvasEventMap {
     [KiCanvasLoadEvent.type]: KiCanvasLoadEvent;
     [KiCanvasSelectEvent.type]: KiCanvasSelectEvent;
+    [KiCanvasSheetChangeEvent.type]: KiCanvasSheetChangeEvent;
     [KiCanvasMouseMoveEvent.type]: KiCanvasMouseMoveEvent;
 }
 
@@ -56,10 +80,12 @@ declare global {
     interface WindowEventMap {
         [KiCanvasLoadEvent.type]: KiCanvasLoadEvent;
         [KiCanvasSelectEvent.type]: KiCanvasSelectEvent;
+            [KiCanvasSheetChangeEvent.type]: KiCanvasSheetChangeEvent;
     }
 
     interface HTMLElementEventMap {
         [KiCanvasLoadEvent.type]: KiCanvasLoadEvent;
         [KiCanvasSelectEvent.type]: KiCanvasSelectEvent;
+            [KiCanvasSheetChangeEvent.type]: KiCanvasSheetChangeEvent;
     }
 }

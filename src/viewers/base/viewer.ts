@@ -15,6 +15,7 @@ import {
     KiCanvasMouseMoveEvent,
     KiCanvasSelectEvent,
     type KiCanvasEventMap,
+    type Selection,
 } from "./events";
 import { ViewLayerSet } from "./view-layers";
 import { Viewport } from "./viewport";
@@ -34,6 +35,7 @@ export abstract class Viewer extends EventTarget {
     protected setup_finished = new Barrier();
 
     #selected: BBox | null;
+    #additive_click = false;
 
     constructor(
         public canvas: HTMLCanvasElement,
@@ -98,7 +100,10 @@ export abstract class Viewer extends EventTarget {
             this.disposables.add(
                 listen(this.canvas, "click", (e) => {
                     const items = this.layers.query_point(this.mouse_position);
+                    this.#additive_click =
+                        e.shiftKey || e.ctrlKey || e.metaKey;
                     this.on_pick(this.mouse_position, items);
+                    this.#additive_click = false;
                 }),
             );
         }
@@ -212,10 +217,17 @@ export abstract class Viewer extends EventTarget {
             new KiCanvasSelectEvent({
                 item: this.#selected?.context,
                 previous: previous?.context,
+                selection: this.classify_selection(this.#selected?.context),
+                additive: this.#additive_click,
             }),
         );
 
         later(() => this.paint_selected());
+    }
+
+    /** What a selected item means to an embedder, if anything. */
+    protected classify_selection(item: unknown): Selection | null {
+        return null;
     }
 
     public get selection_color() {

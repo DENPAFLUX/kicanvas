@@ -5,6 +5,7 @@
 */
 
 import { later } from "../../base/async";
+import { listen } from "../../base/events";
 import { Logger } from "../../base/log";
 import {
     CSS,
@@ -13,9 +14,14 @@ import {
     css,
     html,
 } from "../../base/web-components";
-import { KCUIElement } from "../../kc-ui";
+import { KCUIElement, KCUIIconElement } from "../../kc-ui";
 import kc_ui_styles from "../../kc-ui/kc-ui.css";
-import { Project } from "../project";
+import type { Theme } from "../../kicad";
+import { KiCanvasSheetChangeEvent } from "../../viewers/base/events";
+import type { Viewer } from "../../viewers/base/viewer";
+import { SchematicViewer } from "../../viewers/schematic/viewer";
+import { Preferences } from "../preferences";
+import { Project, type Inventory, type SheetInfo } from "../project";
 import {
     FetchFileSystem,
     LocalFileSystem,
@@ -30,8 +36,12 @@ const log = new Logger("kicanvas:embedtag");
 
 /**
  * kicanvas-embed tag
+ *
+ * Also the public face of a KiCanvas instance: an embedder drives the project,
+ * the camera and the highlight through this element and never through the
+ * viewer, the project or the shadow tree behind it.
  */
-class KiCanvasEmbedElement extends KCUIElement {
+export class KiCanvasEmbedElement extends KCUIElement {
     static override styles = [
         ...KCUIElement.styles,
         new CSS(kc_ui_styles),
@@ -105,7 +115,13 @@ class KiCanvasEmbedElement extends KCUIElement {
         });
     }
 
-    async #setup_events() {}
+    async #setup_events() {
+        this.addDisposable(
+            listen(this.#project, "change", () => {
+                this.dispatchEvent(new KiCanvasSheetChangeEvent());
+            }),
+        );
+    }
 
     async #load_src() {
         const url_src = [];
@@ -172,6 +188,69 @@ class KiCanvasEmbedElement extends KCUIElement {
 
     public get project(): Project {
         return this.#project;
+    }
+
+    /** Palette and icon sprites for every embed on the page. */
+    public static configure({
+        theme,
+        sprites,
+    }: {
+        theme?: Theme;
+        sprites?: string;
+    }) {
+        if (theme) Preferences.INSTANCE.theme = theme;
+        if (sprites) KCUIIconElement.sprites_source = sprites;
+    }
+
+    get #viewer(): Viewer | null {
+        return this.#schematic_app?.viewer ?? this.#board_app?.viewer ?? null;
+    }
+
+    public zoom_by(factor: number) {
+        this.#viewer?.zoom_by(factor);
+    }
+
+    public zoom_to_page() {
+        this.#viewer?.zoom_to_page();
+    }
+
+    public zoom_to_highlight() {
+        this.#viewer?.zoom_to_selection();
+    }
+
+    /** Marks nets and parts on the active page, replacing any previous set. */
+    public set_highlight(nets: Iterable<string>, parts: Iterable<string>) {
+        const viewer = this.#viewer;
+        if (viewer instanceof SchematicViewer) {
+            viewer.set_highlight(nets, parts);
+        }
+    }
+
+    public get sheets(): SheetInfo[] {
+        return this.#project.sheet_tree;
+    }
+
+    public get active_sheet(): SheetInfo | null {
+        const active = this.#project.active_page?.project_path;
+        return this.sheets.find((sheet) => sheet.id === active) ?? null;
+    }
+
+    public set_active_sheet(id: string) {
+        if (!id || id === this.#project.active_page?.project_path) return;
+        this.#project.set_active_page(id);
+    }
+
+    /** The sheet numbered `page`, or the root sheet when no number is given. */
+    public sheet_for_page(page: string | number | null | undefined) {
+        return this.#project.sheet_by_page(page)?.project_path ?? null;
+    }
+
+    public sheets_with(nets: Iterable<string>, parts: Iterable<string>) {
+        return this.#project.sheets_with(nets, parts);
+    }
+
+    public inventory(): Inventory {
+        return this.#project.inventory();
     }
 
     async #setup_project(vfs: IFileSystem) {

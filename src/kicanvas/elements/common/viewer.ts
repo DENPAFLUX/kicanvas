@@ -93,6 +93,7 @@ export abstract class KCViewerElement<
                 canvas {
                     width: 100%;
                     height: 100%;
+                    cursor: var(--kc-canvas-cursor, default);
                 }
             </style>
             ${this.canvas}`;

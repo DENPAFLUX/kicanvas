@@ -24,6 +24,7 @@ import {
     Bus,
 } from "../../kicad/schematic";
 import type { ProjectPage } from "../../kicanvas/project";
+import type { Selection } from "../base/events";
 import { DocumentViewer } from "../base/document-viewer";
 import { type ViewLayerSet } from "../base/view-layers";
 import { LayerNames, LayerSet } from "./layers";
@@ -508,6 +509,33 @@ export class SchematicViewer extends DocumentViewer<
         }
 
         super.select(item);
+    }
+
+    protected override classify_selection(item: unknown): Selection | null {
+        if (item instanceof SchematicSheet) {
+            const page = this.schematic.project?.page_for_sheet(item);
+            return page ? { kind: "sheet", name: page.project_path } : null;
+        }
+
+        if (
+            item instanceof NetLabel ||
+            item instanceof GlobalLabel ||
+            item instanceof HierarchicalLabel
+        ) {
+            return item.text ? { kind: "net", name: item.text } : null;
+        }
+
+        if (item instanceof SchematicSymbol) {
+            // A power port symbol stands for its net, named by the symbol value.
+            if (item.lib_symbol?.power) {
+                return item.value ? { kind: "net", name: item.value } : null;
+            }
+            return item.reference
+                ? { kind: "part", name: item.reference }
+                : null;
+        }
+
+        return null;
     }
 
     /** Paints directly, so it emits no KiCanvasSelectEvent. */

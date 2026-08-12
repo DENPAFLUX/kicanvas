@@ -208,6 +208,60 @@ export class KicadSch {
         }
     }
 
+    /**
+     * The reference `sym` carries at `sheet_path`, from the instance data
+     * update_hierarchical_data assigns but without mutating it, so pages other
+     * than the loaded one stay readable. `sym.instances` of a flat multi-page
+     * design is keyed by the root UUID alone, hence the parent-path fallback.
+     */
+    symbol_reference(sheet_path: string, sym: SchematicSymbol) {
+        const separator = sheet_path.lastIndexOf("/");
+        const parent = separator > 0 ? sheet_path.slice(0, separator) : null;
+        const symbol_path = `${sheet_path}/${sym.uuid}`;
+        const root = (
+            this.project?.root_schematic_page?.document as KicadSch | undefined
+        )?.symbol_instances;
+
+        return (
+            sym.instances?.get(sheet_path)?.reference ??
+            (parent ? sym.instances?.get(parent)?.reference : undefined) ??
+            this.symbol_instances?.get(symbol_path)?.reference ??
+            (root !== this.symbol_instances
+                ? root?.get(symbol_path)?.reference
+                : undefined) ??
+            sym.get_property_text("Reference")
+        );
+    }
+
+    /** Whether anything on this page names `net`. */
+    has_net(net: string) {
+        if (this.find_net_label(net)) return true;
+
+        // A power symbol names its net with the symbol value.
+        for (const sym of this.symbols.values()) {
+            if (sym.value === net) return true;
+        }
+
+        // A sheet pin carries the net across the hierarchy boundary.
+        for (const sheet of this.sheets) {
+            for (const pin of sheet.pins) {
+                if (pin.name === net) return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** Whether `reference` is instantiated on this page at `sheet_path`. */
+    has_part(sheet_path: string, reference: string) {
+        for (const sym of this.symbols.values()) {
+            if (this.symbol_reference(sheet_path, sym) === reference) {
+                return true;
+            }
+        }
+        return this.find_symbol(reference) != null;
+    }
+
     *items() {
         yield* this.wires;
         yield* this.buses;

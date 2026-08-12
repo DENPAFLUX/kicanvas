@@ -20,6 +20,19 @@ import type { IFileSystem } from "./services/vfs";
 
 const log = new Logger("kicanvas:project");
 
+export interface SheetInfo {
+    /** project_path, the identifier set_active_page takes. */
+    id: string;
+    label: string;
+    depth: number;
+    page: string;
+}
+
+export interface Inventory {
+    parts: { reference: string; value: string; pin_count: number }[];
+    nets: { name: string; power: boolean }[];
+}
+
 export class Project extends EventTarget implements IDisposable {
     #fs: IFileSystem;
     #files_by_name: Map<string, KicadPCB | KicadSch | null> = new Map();
@@ -276,6 +289,117 @@ export class Project extends EventTarget implements IDisposable {
         if (!this.#root_schematic_page) {
             log.error("No vaild root schematic was found.");
         }
+    }
+
+    /** Every page in hierarchy order; `depth` is relative to the shallowest. */
+    public get sheet_tree(): SheetInfo[] {
+        const pages = [...this.pages()];
+        const depths = pages.map(
+            (page) => page.sheet_path.split("/").filter(Boolean).length,
+        );
+        const min_depth = Math.min(...depths);
+
+        return pages.map((page, i) => ({
+            id: page.project_path,
+            label: this.#page_label(page),
+            depth: depths[i]! - min_depth,
+            page: page.page ?? "",
+        }));
+    }
+
+    // The root page is named "Root"; its filename is the project name.
+    #page_label(page: ProjectPage) {
+        const named =
+            page.project_path === this.#root_schematic_page?.project_path
+                ? page.filename
+                : (page.name ?? page.filename);
+        const name = named.replace(/\.kicad_\w+$/, "");
+        return page.page ? `${page.page}: ${name}` : name;
+    }
+
+    /**
+     * The page a hierarchical sheet symbol opens. Matched on filename and uuid
+     * because the sheet's own instance path is unset in some projects.
+     */
+    public page_for_sheet(sheet: SchematicSheet) {
+        return [...this.pages()].find(
+            (page) =>
+                page.filename === sheet.sheetfile &&
+                page.sheet_path.endsWith(`/${sheet.uuid}`),
+        );
+    }
+
+    /** The page numbered `page`, or the root sheet when no number is given. */
+    public sheet_by_page(page: string | number | null | undefined) {
+        if (page === null || page === undefined || page === "") {
+            return this.#root_schematic_page;
+        }
+        return [...this.pages()].find((p) => p.page === String(page));
+    }
+
+    /** Pages carrying any of the given nets or part references. */
+    public sheets_with(nets: Iterable<string>, parts: Iterable<string>) {
+        const net_names = [...nets];
+        const references = [...parts];
+
+        if (!net_names.length && !references.length) {
+            return [];
+        }
+
+        const out: string[] = [];
+        for (const page of this.pages()) {
+            const doc = page.document;
+            if (!(doc instanceof KicadSch)) continue;
+            if (
+                net_names.some((net) => doc.has_net(net)) ||
+                references.some((reference) =>
+                    doc.has_part(page.sheet_path, reference),
+                )
+            ) {
+                out.push(page.project_path);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Every part and net name in the project. Parts are unique by reference; net
+     * names may repeat, flagged by whether a power symbol named them.
+     */
+    public inventory(): Inventory {
+        const parts: Inventory["parts"] = [];
+        const nets: Inventory["nets"] = [];
+        const seen = new Set<string>();
+
+        for (const page of this.pages()) {
+            const doc = page.document;
+            if (!(doc instanceof KicadSch)) continue;
+
+            for (const label of [
+                ...doc.net_labels,
+                ...doc.global_labels,
+                ...doc.hierarchical_labels,
+            ]) {
+                nets.push({ name: label.text, power: false });
+            }
+
+            for (const sym of doc.symbols.values()) {
+                if (sym.lib_symbol?.power) {
+                    nets.push({ name: sym.value, power: true });
+                    continue;
+                }
+                const reference = doc.symbol_reference(page.sheet_path, sym);
+                if (!reference || seen.has(reference)) continue;
+                seen.add(reference);
+                parts.push({
+                    reference,
+                    value: sym.value ?? "",
+                    pin_count: sym.pins?.length ?? 0,
+                });
+            }
+        }
+
+        return { parts, nets };
     }
 
     public *files() {

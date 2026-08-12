@@ -96,6 +96,9 @@ export abstract class KCViewerAppElement<
         // Handle item selection in the viewers.
         this.addDisposable(
             this.viewer.addEventListener(KiCanvasSelectEvent.type, (e) => {
+                // A Viewer is a bare EventTarget, so re-dispatch to put the
+                // event on the DOM where an embedder can reach it.
+                this.dispatchEvent(new KiCanvasSelectEvent(e.detail));
                 this.on_viewer_select(e.detail.item, e.detail.previous);
             }),
         );
