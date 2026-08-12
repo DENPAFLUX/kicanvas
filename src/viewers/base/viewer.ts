@@ -18,6 +18,10 @@ import {
 } from "./events";
 import { ViewLayerSet } from "./view-layers";
 import { Viewport } from "./viewport";
+import {
+    max_zoom_default,
+    min_zoom_default,
+} from "../../base/dom/pan-and-zoom";
 
 export abstract class Viewer extends EventTarget {
     public renderer: Renderer;
@@ -242,6 +246,15 @@ export abstract class Viewer extends EventTarget {
     }
 
     abstract zoom_to_page(): void;
+
+    zoom_by(factor: number) {
+        const camera = this.viewport.camera;
+        camera.zoom = Math.min(
+            max_zoom_default,
+            Math.max(min_zoom_default, camera.zoom * factor),
+        );
+        this.draw();
+    }
 
     zoom_to_selection() {
         if (!this.selected) {

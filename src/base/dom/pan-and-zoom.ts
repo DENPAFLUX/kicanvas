@@ -10,6 +10,9 @@ import { Preferences } from "../../kicanvas/preferences";
 const line_delta_multiplier = 8;
 const page_delta_multiplier = 24;
 const zoom_speed = 0.005;
+
+export const min_zoom_default = 0.5;
+export const max_zoom_default = 10;
 const pan_speed = 1;
 
 export type PanAndZoomCallback = () => void;
@@ -33,8 +36,8 @@ export class PanAndZoom {
         public readonly target: HTMLElement,
         public camera: Camera2,
         public callback: PanAndZoomCallback,
-        public min_zoom = 0.5,
-        public max_zoom = 10,
+        public min_zoom = min_zoom_default,
+        public max_zoom = max_zoom_default,
         public bounds?: BBox,
     ) {
         this.target.addEventListener(

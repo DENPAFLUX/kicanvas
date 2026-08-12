@@ -193,8 +193,18 @@ export abstract class KCViewerAppElement<
         const controlslist = parseFlagAttribute(
             this.controlslist ?? "",
             controls == "none"
-                ? { fullscreen: false, download: false, flipview: false }
-                : { fullscreen: true, download: true, flipview: true },
+                ? {
+                      fullscreen: false,
+                      download: false,
+                      flipview: false,
+                      toolbar: false,
+                  }
+                : {
+                      fullscreen: true,
+                      download: true,
+                      flipview: true,
+                      toolbar: true,
+                  },
         );
 
         this.#viewer_elm = this.make_viewer_element();
@@ -250,7 +260,7 @@ export abstract class KCViewerAppElement<
         </kc-ui-floating-toolbar>`;
 
         let bottom_toolbar = null;
-        if (controls != "none") {
+        if (controlslist["toolbar"]) {
             bottom_toolbar = html`<kc-viewer-bottom-toolbar></kc-viewer-bottom-toolbar>`;
         }
 
