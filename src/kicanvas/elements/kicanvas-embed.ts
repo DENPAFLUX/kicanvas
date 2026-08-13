@@ -242,8 +242,18 @@ export class KiCanvasEmbedElement extends KCUIElement {
         this.#viewer?.zoom_to_selection();
     }
 
-    /** Frames a world-space box, e.g. the extent of something drawn on top. */
-    public zoom_to_bounds(x1: number, y1: number, x2: number, y2: number) {
+    /**
+     * Frames a world-space box, e.g. the extent of something drawn on top.
+     * A margin of 0 frames the box exactly, so a view captured through
+     * `camera.screen_to_world` can be restored as it was.
+     */
+    public zoom_to_bounds(
+        x1: number,
+        y1: number,
+        x2: number,
+        y2: number,
+        margin = 10,
+    ) {
         const viewer = this.#viewer;
 
         if (!viewer?.viewport) return;
@@ -251,7 +261,7 @@ export class KiCanvasEmbedElement extends KCUIElement {
         viewer.viewport.camera.bbox = BBox.from_points([
             new Vec2(x1, y1),
             new Vec2(x2, y2),
-        ]).grow(10);
+        ]).grow(margin);
 
         viewer.draw();
     }
