@@ -14,6 +14,7 @@ import {
     KiCanvasLoadEvent,
     KiCanvasMouseMoveEvent,
     KiCanvasSelectEvent,
+    KiCanvasViewChangeEvent,
     type KiCanvasEventMap,
     type Selection,
 } from "./events";
@@ -178,6 +179,7 @@ export abstract class Viewer extends EventTarget {
 
         window.requestAnimationFrame(() => {
             this.on_draw();
+            this.dispatchEvent(new KiCanvasViewChangeEvent());
         });
     }
 

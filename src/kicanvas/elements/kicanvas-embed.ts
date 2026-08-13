@@ -7,6 +7,7 @@
 import { later } from "../../base/async";
 import { listen } from "../../base/events";
 import { Logger } from "../../base/log";
+import { BBox, Vec2 } from "../../base/math";
 import {
     CSS,
     CustomElement,
@@ -206,6 +207,29 @@ export class KiCanvasEmbedElement extends KCUIElement {
         return this.#schematic_app?.viewer ?? this.#board_app?.viewer ?? null;
     }
 
+    /**
+     * World/screen transforms for anything an embedder draws on top of the
+     * canvas. Screen coordinates are relative to the canvas' top left corner.
+     */
+    public get camera(): {
+        world_to_screen: (point: { x: number; y: number }) => Vec2;
+        screen_to_world: (x: number, y: number) => Vec2;
+    } | null {
+        const camera = this.#viewer?.viewport?.camera;
+
+        if (!camera) return null;
+
+        return {
+            world_to_screen: ({ x, y }) => camera.world_to_screen(new Vec2(x, y)),
+            screen_to_world: (x, y) => camera.screen_to_world(new Vec2(x, y)),
+        };
+    }
+
+    /** The canvas that handles pan and zoom, for forwarding synthetic events. */
+    public get canvas(): HTMLCanvasElement | null {
+        return this.#viewer?.canvas ?? null;
+    }
+
     public zoom_by(factor: number) {
         this.#viewer?.zoom_by(factor);
     }
@@ -216,6 +240,20 @@ export class KiCanvasEmbedElement extends KCUIElement {
 
     public zoom_to_highlight() {
         this.#viewer?.zoom_to_selection();
+    }
+
+    /** Frames a world-space box, e.g. the extent of something drawn on top. */
+    public zoom_to_bounds(x1: number, y1: number, x2: number, y2: number) {
+        const viewer = this.#viewer;
+
+        if (!viewer?.viewport) return;
+
+        viewer.viewport.camera.bbox = BBox.from_points([
+            new Vec2(x1, y1),
+            new Vec2(x2, y2),
+        ]).grow(10);
+
+        viewer.draw();
     }
 
     /** Marks nets and parts on the active page, replacing any previous set. */

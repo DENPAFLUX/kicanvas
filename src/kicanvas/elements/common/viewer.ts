@@ -6,7 +6,10 @@
 
 import { attribute, html } from "../../../base/web-components";
 import { KCUIElement } from "../../../kc-ui";
-import { KiCanvasLoadEvent } from "../../../viewers/base/events";
+import {
+    KiCanvasLoadEvent,
+    KiCanvasViewChangeEvent,
+} from "../../../viewers/base/events";
 import type { Viewer } from "../../../viewers/base/viewer";
 import { Preferences, WithPreferences } from "../../preferences";
 import type { ProjectPage } from "../../project";
@@ -42,6 +45,15 @@ export abstract class KCViewerElement<
                     this.loaded = true;
                     this.dispatchEvent(new KiCanvasLoadEvent());
                 }),
+            );
+
+            this.addDisposable(
+                this.viewer.addEventListener(
+                    KiCanvasViewChangeEvent.type,
+                    () => {
+                        this.dispatchEvent(new KiCanvasViewChangeEvent());
+                    },
+                ),
             );
         })();
     }

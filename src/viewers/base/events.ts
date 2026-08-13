@@ -54,6 +54,15 @@ export class KiCanvasSheetChangeEvent extends KiCanvasEvent<null> {
     }
 }
 
+/** The camera moved or the canvas resized, so anything drawn on top must follow. */
+export class KiCanvasViewChangeEvent extends KiCanvasEvent<null> {
+    static readonly type = "kicanvas:viewchange";
+
+    constructor() {
+        super(KiCanvasViewChangeEvent.type, null, true);
+    }
+}
+
 interface MouseMoveDetails {
     x: number;
     y: number;
@@ -73,6 +82,7 @@ export interface KiCanvasEventMap {
     [KiCanvasLoadEvent.type]: KiCanvasLoadEvent;
     [KiCanvasSelectEvent.type]: KiCanvasSelectEvent;
     [KiCanvasSheetChangeEvent.type]: KiCanvasSheetChangeEvent;
+    [KiCanvasViewChangeEvent.type]: KiCanvasViewChangeEvent;
     [KiCanvasMouseMoveEvent.type]: KiCanvasMouseMoveEvent;
 }
 
@@ -81,11 +91,13 @@ declare global {
         [KiCanvasLoadEvent.type]: KiCanvasLoadEvent;
         [KiCanvasSelectEvent.type]: KiCanvasSelectEvent;
             [KiCanvasSheetChangeEvent.type]: KiCanvasSheetChangeEvent;
+            [KiCanvasViewChangeEvent.type]: KiCanvasViewChangeEvent;
     }
 
     interface HTMLElementEventMap {
         [KiCanvasLoadEvent.type]: KiCanvasLoadEvent;
         [KiCanvasSelectEvent.type]: KiCanvasSelectEvent;
             [KiCanvasSheetChangeEvent.type]: KiCanvasSheetChangeEvent;
+            [KiCanvasViewChangeEvent.type]: KiCanvasViewChangeEvent;
     }
 }
