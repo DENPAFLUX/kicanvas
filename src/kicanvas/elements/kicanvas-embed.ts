@@ -274,6 +274,22 @@ export class KiCanvasEmbedElement extends KCUIElement {
         }
     }
 
+    /**
+     * A second marked set in its own colour, for what an embedder's stored data
+     * refers to. It survives changes to the highlight, and clears with a null
+     * colour.
+     */
+    public set_marks(
+        nets: Iterable<string>,
+        parts: Iterable<string>,
+        color: string | null,
+    ) {
+        const viewer = this.#viewer;
+        if (viewer instanceof SchematicViewer) {
+            viewer.set_marks(nets, parts, color);
+        }
+    }
+
     public get sheets(): SheetInfo[] {
         return this.#project.sheet_tree;
     }

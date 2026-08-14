@@ -4,6 +4,7 @@
     Full text available at: https://opensource.org/licenses/MIT
 */
 
+import { Color } from "../../base/color";
 import { first } from "../../base/iterator";
 import { BBox, Vec2 } from "../../base/math";
 import { is_string } from "../../base/types";
@@ -330,6 +331,17 @@ export class SchematicViewer extends DocumentViewer<
         parts: new Set(),
     };
 
+    /**
+     * A second, independently coloured set. An embedder marks what a stored
+     * finding refers to, so it stays legible while the viewer's own highlight
+     * follows what the user clicks.
+     */
+    #marks: { nets: Set<string>; parts: Set<string>; color: Color | null } = {
+        nets: new Set(),
+        parts: new Set(),
+        color: null,
+    };
+
     /** Net connectivity map built once after load. */
     #net_map: NetMap | null = null;
 
@@ -544,18 +556,34 @@ export class SchematicViewer extends DocumentViewer<
         this._paint_highlight();
     }
 
+    /** Marks a set in `color`, alongside and under the highlight. */
+    public set_marks(
+        nets: Iterable<string>,
+        parts: Iterable<string>,
+        color: string | null,
+    ) {
+        this.#marks = {
+            nets: new Set(nets),
+            parts: new Set(parts),
+            color: color ? Color.from_css(color) : null,
+        };
+        this._paint_highlight();
+    }
+
     protected override paint_selected() {
         this._paint_highlight();
     }
 
-    #highlight_items() {
+    #highlight_items(
+        sets: { nets: Set<string>; parts: Set<string> } = this.#highlight,
+    ) {
         const interactive = this.layers.by_name(LayerNames.interactive)!;
         const wires: (Wire | Bus)[] = [];
         const boxes: { bbox: BBox; net: boolean }[] = [];
 
         if (!this.schematic) return { wires, boxes };
 
-        for (const net_name of this.#highlight.nets) {
+        for (const net_name of sets.nets) {
             const entry = this.#net_map?.by_name.get(net_name);
             if (!entry) continue;
 
@@ -582,7 +610,7 @@ export class SchematicViewer extends DocumentViewer<
             }
         }
 
-        for (const reference of this.#highlight.parts) {
+        for (const reference of sets.parts) {
             const sym = this.schematic.find_symbol(reference);
             if (!sym) continue;
             const bbox = first(this.layers.query_item_bboxes(sym));
@@ -616,17 +644,41 @@ export class SchematicViewer extends DocumentViewer<
         overlay.clear();
         this.layers.highlight(null);
 
-        const { wires, boxes } = this.#highlight_items();
-        const net_color = this.theme.brightened;
-        const net_fill = net_color.with_alpha(NET_HIGHLIGHT_FILL_ALPHA);
-        const part_color = this.theme.shadow;
-        const part_fill = part_color.with_alpha(SELECTION_FILL_ALPHA);
-
         this.renderer.start_layer(overlay.name);
+
+        // Marks go down first, so a selection of the same item reads on top.
+        if (this.#marks.color) {
+            this.#paint_set(this.#highlight_items(this.#marks), {
+                net: this.#marks.color,
+                part: this.#marks.color,
+            });
+        }
+
+        this.#paint_set(this.#highlight_items(), {
+            net: this.theme.brightened,
+            part: this.theme.shadow,
+        });
+
+        overlay.graphics = this.renderer.end_layer();
+        this.draw();
+    }
+
+    #paint_set(
+        {
+            wires,
+            boxes,
+        }: {
+            wires: (Wire | Bus)[];
+            boxes: { bbox: BBox; net: boolean }[];
+        },
+        colors: { net: Color; part: Color },
+    ) {
+        const net_fill = colors.net.with_alpha(NET_HIGHLIGHT_FILL_ALPHA);
+        const part_fill = colors.part.with_alpha(SELECTION_FILL_ALPHA);
 
         for (const wire of wires) {
             this.renderer.line(
-                new Polyline(wire.pts, NET_HIGHLIGHT_STROKE, net_color),
+                new Polyline(wire.pts, NET_HIGHLIGHT_STROKE, colors.net),
             );
         }
 
@@ -638,12 +690,9 @@ export class SchematicViewer extends DocumentViewer<
                 Polyline.from_BBox(
                     bbox,
                     net ? NET_HIGHLIGHT_OUTLINE_WIDTH : SELECTION_OUTLINE_WIDTH,
-                    net ? net_color : part_color,
+                    net ? colors.net : colors.part,
                 ),
             );
         }
-
-        overlay.graphics = this.renderer.end_layer();
-        this.draw();
     }
 }
