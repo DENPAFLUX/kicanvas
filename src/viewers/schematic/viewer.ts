@@ -574,14 +574,49 @@ export class SchematicViewer extends DocumentViewer<
         this._paint_highlight();
     }
 
+    /** The highlight's world-space geometry, for drawing over the canvas. */
+    public highlight_shapes() {
+        return this.#shapes(this.#highlight_items());
+    }
+
+    /** The same, for a set the viewer is not currently highlighting. */
+    public shapes_for(nets: Iterable<string>, parts: Iterable<string>) {
+        return this.#shapes(
+            this.#highlight_items({
+                nets: new Set(nets),
+                parts: new Set(parts),
+            }),
+        );
+    }
+
+    #shapes({
+        wires,
+        boxes,
+    }: {
+        wires: (Wire | Bus)[];
+        boxes: { bbox: BBox; net: boolean }[];
+    }): {
+        boxes: [number, number, number, number][];
+        polylines: [number, number][][];
+    } {
+        return {
+            boxes: boxes.map(({ bbox }) => [bbox.x, bbox.y, bbox.x2, bbox.y2]),
+            polylines: wires.map((wire) =>
+                wire.pts.map((p): [number, number] => [p.x, p.y]),
+            ),
+        };
+    }
+
     #highlight_items(
         sets: { nets: Set<string>; parts: Set<string> } = this.#highlight,
     ) {
-        const interactive = this.layers.by_name(LayerNames.interactive)!;
         const wires: (Wire | Bus)[] = [];
         const boxes: { bbox: BBox; net: boolean }[] = [];
 
-        if (!this.schematic) return { wires, boxes };
+        // An embedder can mark a set before any document has loaded.
+        if (!this.schematic || !this.layers) return { wires, boxes };
+
+        const interactive = this.layers.by_name(LayerNames.interactive)!;
 
         for (const net_name of sets.nets) {
             const entry = this.#net_map?.by_name.get(net_name);
@@ -640,6 +675,8 @@ export class SchematicViewer extends DocumentViewer<
     }
 
     private _paint_highlight() {
+        if (!this.layers) return;
+
         const overlay = this.layers.overlay;
         overlay.clear();
         this.layers.highlight(null);

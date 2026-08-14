@@ -290,6 +290,22 @@ export class KiCanvasEmbedElement extends KCUIElement {
         }
     }
 
+    public highlight_shapes() {
+        const viewer = this.#viewer;
+
+        return viewer instanceof SchematicViewer
+            ? viewer.highlight_shapes()
+            : { boxes: [], polylines: [] };
+    }
+
+    public shapes_for(nets: Iterable<string>, parts: Iterable<string>) {
+        const viewer = this.#viewer;
+
+        return viewer instanceof SchematicViewer
+            ? viewer.shapes_for(nets, parts)
+            : { boxes: [], polylines: [] };
+    }
+
     public get sheets(): SheetInfo[] {
         return this.#project.sheet_tree;
     }
