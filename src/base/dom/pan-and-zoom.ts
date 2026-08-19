@@ -10,6 +10,7 @@ import { Preferences } from "../../kicanvas/preferences";
 const line_delta_multiplier = 8;
 const page_delta_multiplier = 24;
 const zoom_speed = 0.005;
+const MIDDLE_BUTTON = 1;
 
 export const min_zoom_default = 0.5;
 export const max_zoom_default = 10;
@@ -94,7 +95,7 @@ export class PanAndZoom {
         let dragging = false;
 
         this.target.addEventListener("mousedown", (e: MouseEvent) => {
-            if (e.button === 1 || e.button === 2) {
+            if (e.button === MIDDLE_BUTTON) {
                 e.preventDefault();
                 dragging = true;
                 dragStartPosition = new Vec2(e.clientX, e.clientY);
@@ -111,7 +112,7 @@ export class PanAndZoom {
         });
 
         this.target.addEventListener("mouseup", (e: MouseEvent) => {
-            if (e.button === 1 || e.button === 2) {
+            if (e.button === MIDDLE_BUTTON) {
                 dragging = false;
                 dragStartPosition = null;
             }
