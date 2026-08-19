@@ -319,6 +319,19 @@ const SELECTION_FILL_ALPHA = 0.25;
 const SELECTION_OUTLINE_WIDTH = 0.254;
 const SHEET_PIN_RADIUS = 1.27; // half a 0.1" grid step                       // outline stroke (mm)
 
+// The sheet painter draws pins as throwaway labels, so no bbox is registered
+// for the pin itself.
+function sheet_pin_bbox(pin: SchematicSheetPin) {
+    const at = pin.at.position;
+    return new BBox(
+        at.x - SHEET_PIN_RADIUS,
+        at.y - SHEET_PIN_RADIUS,
+        SHEET_PIN_RADIUS * 2,
+        SHEET_PIN_RADIUS * 2,
+        pin,
+    );
+}
+
 export class SchematicViewer extends DocumentViewer<
     KicadSch,
     SchematicPainter,
@@ -495,12 +508,16 @@ export class SchematicViewer extends DocumentViewer<
         if (item instanceof Wire || item instanceof Bus) {
             const net_name = this.#net_map?.wire_to_net.get(item) ?? null;
             if (net_name) {
-                // Try to anchor the selection box to the first label or power sym.
+                // Try to anchor the selection box to the first label, power sym
+                // or sheet pin.
                 const entry = this.#net_map?.by_name.get(net_name);
                 const anchor = entry?.labels[0] ?? entry?.power_syms[0] ?? null;
+                const pin = entry?.sheet_pins[0] ?? null;
                 if (anchor) {
                     const bboxes = this.layers.query_item_bboxes(anchor);
                     super.select(first(bboxes) ?? null);
+                } else if (pin) {
+                    super.select(sheet_pin_bbox(pin));
                 } else {
                     super.select(null);
                 }
@@ -535,6 +552,11 @@ export class SchematicViewer extends DocumentViewer<
             item instanceof HierarchicalLabel
         ) {
             return item.text ? { kind: "net", name: item.text } : null;
+        }
+
+        // A sheet pin names the net it connects on the parent sheet.
+        if (item instanceof SchematicSheetPin) {
+            return item.name ? { kind: "net", name: item.name } : null;
         }
 
         if (item instanceof SchematicSymbol) {
@@ -629,19 +651,8 @@ export class SchematicViewer extends DocumentViewer<
                 const bbox = interactive.bboxes.get(item);
                 if (bbox) boxes.push({ bbox: bbox.copy().grow(0.3), net: true });
             }
-            // The sheet painter draws pins as throwaway labels, so no bbox is
-            // registered for the pin itself.
             for (const pin of entry.sheet_pins) {
-                const at = pin.at.position;
-                boxes.push({
-                    bbox: new BBox(
-                        at.x - SHEET_PIN_RADIUS,
-                        at.y - SHEET_PIN_RADIUS,
-                        SHEET_PIN_RADIUS * 2,
-                        SHEET_PIN_RADIUS * 2,
-                    ),
-                    net: true,
-                });
+                boxes.push({ bbox: sheet_pin_bbox(pin), net: true });
             }
         }
 
