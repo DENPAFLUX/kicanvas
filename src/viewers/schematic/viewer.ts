@@ -31,6 +31,8 @@ import { type ViewLayerSet } from "../base/view-layers";
 import { LayerNames, LayerSet } from "./layers";
 import { SchematicPainter } from "./painter";
 
+const PICK_CYCLE_TOLERANCE_PX = 5;
+
 /**
  * Returns the schematic-space connection points for all pins of a symbol.
  *
@@ -395,17 +397,43 @@ export class SchematicViewer extends DocumentViewer<
         return new LayerSet(this.theme);
     }
 
-    // Wires and buses render as ~1 px strokes, so their bboxes are nearly
-    // zero-height (or zero-width for vertical runs). Expand the hit area on a
-    // second pass so they are easy to click without pixel-perfect aim.
-    //
-    // We also prioritise wires and labels over regular component symbols so that
-    // clicking a pin stub area (which is rendered as part of the symbol, not a
-    // separate Wire item) still reaches the net label placed at the pin endpoint.
+    /** The last click; another click on the same spot steps `index` on. */
+    #pick_cycle: { at: Vec2; keys: string[]; index: number } | null = null;
+
     protected override on_pick(
         mouse: Vec2,
         items: ReturnType<ViewLayerSet["query_point"]>,
     ) {
+        const candidates = this.#pick_candidates(mouse, items);
+        const keys = candidates.map(({ key }) => key);
+        const cycle = this.#pick_cycle;
+        const same_spot =
+            cycle &&
+            cycle.at.sub(mouse).magnitude <=
+                PICK_CYCLE_TOLERANCE_PX / this.viewport.camera.zoom &&
+            cycle.keys.join("\n") === keys.join("\n");
+
+        const index = same_spot ? (cycle.index + 1) % keys.length : 0;
+        this.#pick_cycle = keys.length
+            ? { at: mouse.copy(), keys, index }
+            : null;
+        this.select((candidates[index]?.item as any) ?? null);
+    }
+
+    // Wires and buses render as ~1 px strokes, so their bboxes are nearly
+    // zero-height (or zero-width for vertical runs). Expand the hit area so
+    // they are easy to click without pixel-perfect aim.
+    //
+    // Wires and labels rank above regular component symbols so that clicking
+    // a pin stub area (which is rendered as part of the symbol, not a separate
+    // Wire item) still reaches the net label placed at the pin endpoint.
+    //
+    // Items that resolve to the same net, part or sheet collapse into one
+    // candidate.
+    #pick_candidates(
+        mouse: Vec2,
+        items: ReturnType<ViewLayerSet["query_point"]>,
+    ): { key: string; item: unknown }[] {
         const is_structural = (ctx: unknown) =>
             ctx instanceof SchematicSymbol &&
             !ctx.lib_symbol.power &&
@@ -414,37 +442,29 @@ export class SchematicViewer extends DocumentViewer<
         const is_regular_symbol = (ctx: unknown) =>
             ctx instanceof SchematicSymbol && !ctx.lib_symbol.power;
 
-        // First pass: exact hit, but defer regular component symbols.
-        // Labels, wires, power symbols, and junctions are selected immediately;
-        // a regular symbol is only used if nothing better is found.
-        let symbol_exact: BBox | null = null;
+        const exact: unknown[] = [];
+        const exact_symbols: unknown[] = [];
         for (const { bbox } of items) {
-            if (is_structural(bbox.context)) continue;
-            if (is_regular_symbol(bbox.context)) {
-                if (!symbol_exact) symbol_exact = bbox;
-                continue;
-            }
-            this.select(bbox.context ?? bbox);
-            return;
+            const ctx = bbox.context;
+            if (is_structural(ctx)) continue;
+            (is_regular_symbol(ctx) ? exact_symbols : exact).push(ctx);
         }
 
-        // Second pass: expanded hit.
         // Net labels get a larger radius (LABEL_RADIUS) to cover the full
         // standard 0.1" / 2.54 mm pin stub so that clicking the stub area
         // near a pin still resolves to the net label.
-        // Wires/buses use a smaller WIRE_RADIUS (fine-grained click tolerance).
-        // Regular symbols are saved as a fallback but not selected immediately.
         const WIRE_RADIUS = 0.5;
         const LABEL_RADIUS = 2.6; // slightly > 2.54 mm standard pin stub
-        let symbol_expanded: BBox | null = null;
+        const expanded: unknown[] = [];
+        const expanded_symbols: unknown[] = [];
 
         for (const layer of this.layers.interactive_layers()) {
             for (const [, bbox] of layer.bboxes) {
-                if (is_structural(bbox.context)) continue;
                 const ctx = bbox.context;
+                if (is_structural(ctx)) continue;
                 if (is_regular_symbol(ctx)) {
-                    if (!symbol_expanded && bbox.grow(WIRE_RADIUS).contains_point(mouse)) {
-                        symbol_expanded = bbox;
+                    if (bbox.grow(WIRE_RADIUS).contains_point(mouse)) {
+                        expanded_symbols.push(ctx);
                     }
                     continue;
                 }
@@ -453,20 +473,31 @@ export class SchematicViewer extends DocumentViewer<
                         ? WIRE_RADIUS
                         : LABEL_RADIUS;
                 if (bbox.grow(radius).contains_point(mouse)) {
-                    this.select(ctx ?? bbox);
-                    return;
+                    expanded.push(ctx);
                 }
             }
         }
 
-        // Fall back to component symbol (exact hit preferred over expanded hit).
-        const hit = symbol_exact ?? symbol_expanded;
-        if (hit) {
-            this.select(hit.context ?? hit);
-            return;
+        const candidates = new Map<string, unknown>();
+        for (const item of [
+            ...exact,
+            ...expanded,
+            ...exact_symbols,
+            ...expanded_symbols,
+        ]) {
+            const key = this.#pick_key(item);
+            if (key && !candidates.has(key)) candidates.set(key, item);
         }
+        return [...candidates].map(([key, item]) => ({ key, item }));
+    }
 
-        this.select(null);
+    #pick_key(item: unknown): string | null {
+        if (item instanceof Wire || item instanceof Bus) {
+            const net = this.#net_map?.wire_to_net.get(item);
+            return net ? `net:${net}` : null;
+        }
+        const selection = this.classify_selection(item);
+        return selection ? `${selection.kind}:${selection.name}` : null;
     }
 
     public override select(
